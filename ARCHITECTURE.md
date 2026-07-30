@@ -26,8 +26,14 @@ occurrences cheaply.
 | Database | Postgres 17 + pgvector |
 | Jobs | arq + Redis |
 | Storage / DB / Auth | Supabase |
-| Deploy | Vercel (frontend), Railway (backend, worker, Redis) |
+| Deploy | Vercel (frontend), Render (backend, worker, Key Value) |
 | Local dev | Docker Compose |
+
+**"Key Value" is Render's name for its Redis-compatible service.** Nothing in the
+code changes because of it: the dependency is still `redis`, the setting is still
+`REDIS_URL`, and arq still talks Redis in Phase 3. Only the dashboard label and
+the free plan's persistence guarantees differ — see `ROADMAP.md`'s deferred
+section for the latter, which matters once jobs are real.
 
 **The backend container's entrypoint is `backend/start.sh`, not an inline
 command.** It runs `alembic upgrade head` and then `exec`s uvicorn. Two reasons,

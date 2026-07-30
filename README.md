@@ -84,7 +84,7 @@ route cannot answer both:
 
 - **`/health` is always 200.** The Next page consumes it, so a dead dependency
   has to arrive as readable data rather than as a failed fetch.
-- **`/health/ready` returns 503 when any dependency is down.** This is Railway's
+- **`/health/ready` returns 503 when any dependency is down.** This is Render's
   healthcheck target. If always-200 were the only contract, a dead Postgres
   would read as a healthy deploy and traffic would keep being routed to it.
 

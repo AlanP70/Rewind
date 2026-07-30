@@ -8,13 +8,13 @@ Rules that apply to every phase:
 - Do not build past the current phase. Not "while I'm in here."
 - A phase is done when its done-criteria are literally true, checked by running
   something — not when the code exists.
-- Every phase ships to Railway/Vercel. `main` is always deployable.
+- Every phase ships to Render/Vercel. `main` is always deployable.
 
 ---
 
 ## Phase 0 — Deploy an empty app end to end
 
-**Goal:** Prove the whole pipe — browser → Vercel → Railway → Postgres/Redis —
+**Goal:** Prove the whole pipe — browser → Vercel → Render → Postgres/Redis —
 before there is any product in it. All deployment pain is paid once, now, when
 there is nothing to debug except the deployment.
 
@@ -23,7 +23,7 @@ there is nothing to debug except the deployment.
 - FastAPI app with **two** health routes over one shared check function:
   - `GET /health` — **always 200**, body `{status, db, redis}`. This is what the
     Next page consumes.
-  - `GET /health/ready` — **503 if any dependency is down**. This is Railway's
+  - `GET /health/ready` — **503 if any dependency is down**. This is Render's
     healthcheck target.
 - `CORSMiddleware`, allowed origins **from an env var**.
 - Alembic initialised; one migration, `0001_enable_vector`, whose entire job is
@@ -57,7 +57,10 @@ there is nothing to debug except the deployment.
   than to unpick when there isn't.
 - Backend deps: `asyncpg` for the app, sync `psycopg` for Alembic.
 - Compose runs Postgres and Redis only; backend and frontend run on the host.
-  `backend/Dockerfile` exists for Railway, not for local dev.
+  `backend/Dockerfile` exists for Render, not for local dev. Its `CMD` is
+  `backend/start.sh`, which migrates and then `exec`s uvicorn — Render's Docker
+  Command field cannot be trusted to parse a compound command, and its free tier
+  has no pre-deploy step. **Leave that field blank** so the Dockerfile wins.
 
 **Done when**
 - `docker compose up` gives working Postgres and Redis.
@@ -73,11 +76,14 @@ there is nothing to debug except the deployment.
   returns 200 with `db: "down"` when Postgres is stopped.
 - `GET /health/ready` returns 503 when Postgres is stopped, 200 when it is up.
   **Reason this route exists:** always-200 as the only contract means a dead
-  Postgres reads as a healthy deploy, and Railway keeps routing traffic to it.
+  Postgres reads as a healthy deploy, and Render keeps routing traffic to it.
 - CORS is proven by the deployed Vercel page rendering health from the deployed
-  Railway backend — a real cross-origin browser fetch, not curl. Origins come
+  Render backend — a real cross-origin browser fetch, not curl. Origins come
   from the env var; a localhost placeholder holds until the first deploy supplies
-  the real value.
+  the real value. **On Render's free tier, distinguish a CORS failure from a cold
+  start**: an idle instance spins down, so the first request after inactivity can
+  fail or hang for ~30–60s. A reload that succeeds means the deploy was asleep,
+  not that CORS is misconfigured.
 - A fresh clone reaches a running local app using only the README.
 
 ---
@@ -277,3 +283,16 @@ without them uploading anything first.
   (`statement_cache_size=0` for asyncpg). Phase 0 chose the session pooler to
   avoid IPv6-only direct connections and psycopg's auto-prepare, neither of which
   is a scaling argument.
+
+- **Render's free Key Value plan has no persistence — settle this before Phase 3
+  puts arq on it.** A restart or eviction drops everything in it. For Phase 0 that
+  is irrelevant, because the only thing touching Redis is a health ping with no
+  state to lose. Once arq holds a job queue there, a restart mid-document silently
+  loses enqueued work, and the honest fix is a paid plan rather than
+  application-level retry logic.
+
+- **Render's free web service spins down when idle, so `/health/ready` is not an
+  uptime check there.** Render's own healthcheck does not keep a free instance
+  awake; an external pinger would, at the cost of the monthly instance-hour
+  allowance. Treat the route as a deploy gate and a dependency probe — which is
+  what it was built for — not as monitoring.

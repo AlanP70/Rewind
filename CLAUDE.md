@@ -15,7 +15,8 @@ Full detail: `ARCHITECTURE.md`. Phase plan: `ROADMAP.md`.
 - **Backend:** FastAPI, SQLAlchemy, Alembic, Postgres 17 + pgvector
 - **Jobs:** arq + Redis — **not Celery**
 - **Storage/DB/Auth:** Supabase
-- **Deploy:** Vercel (frontend), Railway (backend + worker + Redis)
+- **Deploy:** Vercel (frontend), Render (backend + worker + Key Value, which is
+  Render's name for its Redis-compatible service — the app still speaks Redis)
 - **Local dev:** Docker Compose
 
 ## Invariants (non-negotiable)
