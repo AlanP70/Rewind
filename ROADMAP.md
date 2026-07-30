@@ -258,3 +258,14 @@ without them uploading anything first.
 - Every route has a defined empty state and error state.
 - A stranger reaches "I understand what this does" from the landing page without
   explanation.
+
+---
+
+## Deferred — operational concerns with no phase yet
+
+- **Revisit the Supabase session pooler's connection cap before this has real
+  concurrent users.** Two options: the direct connection with the IPv4 add-on, or
+  transaction-mode PgBouncer with prepared statements disabled app-side
+  (`statement_cache_size=0` for asyncpg). Phase 0 chose the session pooler to
+  avoid IPv6-only direct connections and psycopg's auto-prepare, neither of which
+  is a scaling argument.

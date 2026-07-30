@@ -1,0 +1,21 @@
+[project]
+name = "rewind-backend"
+version = "0.1.0"
+description = "Rewind backend — longitudinal learning archive"
+# Pinned to 3.12: the system interpreter is 3.14 and is not used. uv provisions this.
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.14",
+    # asyncpg for the app, sync psycopg for Alembic.
+    "asyncpg>=0.30",
+    "psycopg[binary]>=3.2",
+    "redis>=5.2",
+    "pydantic-settings>=2.6",
+]
+
+[tool.uv]
+# This is an application, not a library — nothing imports it, so it is not built.
+package = false

@@ -1,0 +1,17 @@
+# Secrets
+.env
+.env.local
+!.env.example
+!.env.local.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Node
+node_modules/
+.next/
+
+# Editors / OS
+.DS_Store
