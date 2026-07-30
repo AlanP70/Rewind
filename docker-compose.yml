@@ -1,8 +1,10 @@
 # Local dev dependencies only. The backend and frontend run on the host.
-# Postgres major version is 17 to match what the Supabase project provisions.
+# Both the Postgres major version (17) and the pgvector version (0.8.2) are
+# pinned to match what the Supabase project provisions. Bump by hand when
+# Supabase upgrades — see ROADMAP.md's Phase 0 constraints.
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:0.8.2-pg17
     environment:
       POSTGRES_USER: rewind
       POSTGRES_PASSWORD: rewind

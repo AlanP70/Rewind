@@ -43,6 +43,14 @@ there is nothing to debug except the deployment.
   Supabase project provisions.** Ask for the number before writing the file;
   do not default to 16. Local and production disagreeing on the major version
   turns Phase 0 into a debugging exercise about the wrong thing.
+
+  **The pgvector version is pinned for the same reason.** The image tag is
+  `pgvector/pgvector:0.8.2-pg17`, not `pg17`, because the floating tag ran local
+  ahead of Supabase (0.8.6 vs 0.8.2) and 0.8.x changes index and operator
+  behaviour — local would quietly accept what production rejects, and Phase 4
+  adds HNSW indexes. **Both numbers are bumped by hand when Supabase upgrades.**
+  That maintenance cost is accepted: catching a version gap here, with one
+  migration and no data, is cheaper than catching it in Phase 4 with real data.
 - **React Query: provider plus one inline `useQuery`.** No query-key factory, no
   `useHealth` wrapper, no `lib/queries/` directory. One page does not justify the
   scaffolding, and the scaffolding is easier to add when there is a second caller
