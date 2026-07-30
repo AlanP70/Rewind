@@ -1,4 +1,4 @@
-# For Railway, not for local dev — locally the backend runs on the host and
+# For Render, not for local dev — locally the backend runs on the host and
 # compose provides Postgres and Redis only.
 FROM python:3.12-slim
 
@@ -12,8 +12,10 @@ RUN uv sync --locked --no-dev
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+COPY start.sh ./
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Railway supplies PORT.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# start.sh runs the migration and then execs uvicorn — see the comment in it for
+# why this is a script and not an inline command. The platform supplies PORT.
+CMD ["/app/start.sh"]

@@ -29,6 +29,15 @@ occurrences cheaply.
 | Deploy | Vercel (frontend), Railway (backend, worker, Redis) |
 | Local dev | Docker Compose |
 
+**The backend container's entrypoint is `backend/start.sh`, not an inline
+command.** It runs `alembic upgrade head` and then `exec`s uvicorn. Two reasons,
+both about the deploy platform rather than the app: Render's Docker Command field
+does not reliably parse a compound `sh -c '... && ...'` string — the whole string
+arrives as one literal token and the container exits 127 — and Render's free tier
+has no separate pre-deploy command step, so migrations have nowhere else to run.
+`.gitattributes` pins `*.sh` to LF for the same deploy path: this machine has
+`core.autocrlf=true`, and a CRLF shebang fails inside the Linux container.
+
 **arq, not Celery.** The job graph is a handful of linear document-processing
 pipelines. arq is async-native (matching FastAPI), configured in one file, and
 its entire surface area is readable in an afternoon. Celery's broker

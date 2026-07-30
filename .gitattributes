@@ -1,0 +1,5 @@
+# This machine has core.autocrlf=true. Without the rule below, backend/start.sh
+# checks out with CRLF, Docker copies the CRLF working copy into the image, and
+# Linux fails on the shebang with `/bin/sh^M: bad interpreter` — an exit 126/127
+# that looks like a missing binary rather than a line-ending problem.
+*.sh text eol=lf
