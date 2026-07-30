@@ -70,7 +70,13 @@ changing the schema.
 
 ## Current phase
 
-**Phase 0 — deploy an empty app end to end.** Scope: docker-compose (Postgres 16
-+ pgvector, Redis), FastAPI with `GET /health`, Alembic with one migration
-enabling `vector`, a Next.js page that displays `/health`, `.env.example`,
-README. Nothing else.
+**Phase 0 — deploy an empty app end to end.** Scope: docker-compose (Postgres +
+pgvector, Redis), FastAPI with `GET /health` and `GET /health/ready`, CORS from an
+env var, Alembic with one migration enabling `vector`, a Next.js page that
+displays `/health`, `.env.example`, README. Nothing else.
+
+**Read ROADMAP.md's Phase 0 section before writing any of it** — it carries
+constraints that are not guessable: Python 3.12 via `uv` (system Python is 3.14.4
+and must not be used), the Postgres major version must match what Supabase
+provisions and must be asked for rather than defaulted, and React Query is
+provider-plus-one-inline-`useQuery` with no scaffolding.

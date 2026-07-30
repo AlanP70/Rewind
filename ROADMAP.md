@@ -19,23 +19,57 @@ before there is any product in it. All deployment pain is paid once, now, when
 there is nothing to debug except the deployment.
 
 **Deliverable**
-- `docker-compose.yml`: Postgres 16 with pgvector, Redis.
-- FastAPI app with a single route: `GET /health`, reporting DB and Redis
-  connectivity.
-- Alembic initialised; one migration whose entire job is
+- `docker-compose.yml`: Postgres with pgvector (`pgvector/pgvector:pgNN`), Redis.
+- FastAPI app with **two** health routes over one shared check function:
+  - `GET /health` — **always 200**, body `{status, db, redis}`. This is what the
+    Next page consumes.
+  - `GET /health/ready` — **503 if any dependency is down**. This is Railway's
+    healthcheck target.
+- `CORSMiddleware`, allowed origins **from an env var**.
+- Alembic initialised; one migration, `0001_enable_vector`, whose entire job is
   `CREATE EXTENSION IF NOT EXISTS vector`.
 - Next.js app with one page that fetches `/health` and displays the result.
 - `.env.example` and a `README.md` with setup steps.
 
 **Nothing else. No models, no routes beyond health, no UI beyond that page.**
 
+**Constraints settled before writing any of it**
+
+- **Python 3.12**, pinned in `pyproject.toml`, interpreter provisioned by `uv`.
+  System Python on this machine is **3.14.4 and is not to be used** — wheel
+  availability on Windows is not guaranteed that far ahead, and this machine has
+  a history of PATH conflicts between interpreters.
+- **The Postgres major version in `docker-compose.yml` must match whatever the
+  Supabase project provisions.** Ask for the number before writing the file;
+  do not default to 16. Local and production disagreeing on the major version
+  turns Phase 0 into a debugging exercise about the wrong thing.
+- **React Query: provider plus one inline `useQuery`.** No query-key factory, no
+  `useHealth` wrapper, no `lib/queries/` directory. One page does not justify the
+  scaffolding, and the scaffolding is easier to add when there is a second caller
+  than to unpick when there isn't.
+- Backend deps: `asyncpg` for the app, sync `psycopg` for Alembic.
+- Compose runs Postgres and Redis only; backend and frontend run on the host.
+  `backend/Dockerfile` exists for Railway, not for local dev.
+
 **Done when**
 - `docker compose up` gives working Postgres and Redis.
 - `alembic upgrade head` succeeds from empty; `SELECT * FROM pg_extension` lists
   `vector`.
-- `GET /health` returns `{db: "ok", redis: "ok"}` locally.
-- The deployed Vercel page renders the health status from the deployed Railway
-  backend.
+- **`0001_enable_vector` is verified against the real Supabase database, not only
+  local Postgres.** Supabase may install pgvector into the `extensions` schema
+  rather than `public`, so `CREATE EXTENSION IF NOT EXISTS vector` can pass
+  locally and still leave the `vector` type unresolvable in production depending
+  on `search_path`. Finding that with one trivial migration is the entire reason
+  this phase exists; finding it with ten is a bad afternoon.
+- `GET /health` returns `{status: "ok", db: "ok", redis: "ok"}` locally, and still
+  returns 200 with `db: "down"` when Postgres is stopped.
+- `GET /health/ready` returns 503 when Postgres is stopped, 200 when it is up.
+  **Reason this route exists:** always-200 as the only contract means a dead
+  Postgres reads as a healthy deploy, and Railway keeps routing traffic to it.
+- CORS is proven by the deployed Vercel page rendering health from the deployed
+  Railway backend — a real cross-origin browser fetch, not curl. Origins come
+  from the env var; a localhost placeholder holds until the first deploy supplies
+  the real value.
 - A fresh clone reaches a running local app using only the README.
 
 ---
