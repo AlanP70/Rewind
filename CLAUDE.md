@@ -35,7 +35,9 @@ Full detail: `ARCHITECTURE.md`. Phase plan: `ROADMAP.md`.
    `documents` so the headline timeline query is one index scan on
    `(concept_id, occurred_at)`. Consequence: `documents.occurred_at` and the
    matching `concept_mentions.occurred_at` rows are only ever written **in the
-   same transaction**.
+   same transaction**. No constraint can enforce this, so it is funnelled:
+   exactly one service function, `redate_document`, writes
+   `documents.occurred_at`. Nothing else touches that column.
 5. **Backend layering:** `api/` → `services/` → `repositories/`, plus
    `workers/`, `models/`, `schemas/`. Routes contain **no business logic and no
    raw queries**. All SQL lives in `repositories/`. Worker tasks call the same

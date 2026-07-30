@@ -157,8 +157,9 @@ offsets only exist during extraction, so a chunk written without them requires
 reprocessing the source PDF to recover. Getting these right in Phase 1 is
 cheaper than any later fix.
 
-Carries `UNIQUE (id, user_id)`, referenced by `concept_mentions`, and itself
-references `documents (id, user_id)` — see invariant 2.
+Carries `UNIQUE (id, user_id)` *and* `UNIQUE (id, document_id)`, both referenced
+by `concept_mentions`, and itself references `documents (id, user_id)`. The two
+redundant uniques cannot be consolidated — see invariant 2.
 
 `vector(1536)` matches the embedding model chosen in Phase 1. Changing the model
 means a migration plus a full re-embed; treat the dimension as a commitment.
@@ -282,9 +283,10 @@ silently, and every RLS policy built on it is then wrong in a way nothing
 detects. So the parents expose the pair and the children reference it.
 
 `documents`, `concepts`, and `chunks` each carry a `UNIQUE (id, user_id)`
-constraint. Redundant on its own — `id` is already unique — but it is what makes
-`(id, user_id)` a referenceable key. Every child then uses a **composite foreign
-key** that includes `user_id`:
+constraint — and `chunks` a second one, `UNIQUE (id, document_id)`. Redundant on
+their own — `id` is already unique — but they are what make those pairs
+referenceable keys. Every child then uses a **composite foreign key** that
+includes the column being pinned:
 
 | Child | Composite FK | Parent |
 | --- | --- | --- |
@@ -295,11 +297,53 @@ key** that includes `user_id`:
 | `concept_edges` | `(concept_b_id, user_id)` | `concepts (id, user_id)` |
 | `concept_mentions` | `(chunk_id, user_id)` | `chunks (id, user_id)` |
 | `concept_mentions` | `(concept_id, user_id)` | `concepts (id, user_id)` |
+| `concept_mentions` | `(chunk_id, document_id)` | `chunks (id, document_id)` |
 
 The effect: a chunk cannot be attached to another user's document, and a mention
 cannot bind a concept and a chunk that belong to different users. Postgres
 rejects the row on write. Cross-tenant corruption stops being discouraged and
 becomes unrepresentable.
+
+#### The redundant uniques on `chunks` cannot be consolidated
+
+`chunks` ends up carrying two extra unique constraints: `(id, user_id)` for the
+ownership chain and `(id, document_id)` for the document chain below. They cannot
+be merged, because **a composite foreign key must reference exactly the columns
+of a unique constraint** — not a subset of a wider one and not a prefix. A single
+`UNIQUE (id, user_id, document_id)` would satisfy neither referencing FK. Each
+referenced pair needs its own constraint, and each constraint is a real index.
+
+So we accept **two extra indexes on the largest table in the schema** as the
+price of structural enforcement. The trade is acceptable because of how `chunks`
+is used: rows are written once, in bulk, by a background ingestion job, and never
+updated afterward. The write cost lands in a worker where nobody is waiting, and
+the read path is unaffected. The alternative is convention that fails silently,
+which is what this whole section exists to eliminate.
+
+#### The transitive chain: why `concept_mentions` has no direct FK to `documents`
+
+`concept_mentions` carries a `document_id` but does **not** reference `documents`
+directly. It doesn't need to. Three FKs compose:
+
+1. `chunks (document_id, user_id) → documents (id, user_id)`
+   — a chunk's document is owned by the chunk's user.
+2. `concept_mentions (chunk_id, user_id) → chunks (id, user_id)`
+   — a mention's user is its chunk's user.
+3. `concept_mentions (chunk_id, document_id) → chunks (id, document_id)`
+   — a mention's document is its chunk's document.
+
+Composing: the mention's `document_id` is its chunk's `document_id`, which is a
+document owned by the chunk's user, which is the mention's user. Correct
+ownership and correct document attribution both follow, and Postgres checks the
+whole chain on every insert.
+
+The FK deliberately **not** written is `(document_id, user_id) → documents
+(id, user_id)`. It pins only the *owner*, which leaves the likely bug fully
+representable: a mention citing chunk 5 from document A while claiming
+document B, where both documents belong to the same user. Ownership is intact and
+the citation is wrong — exactly the silent-divergence failure this section is
+built to prevent. Pinning the mention's document to its *chunk's* document closes
+that hole and makes the direct reference to `documents` redundant.
 
 #### The asymmetry: why `occurred_at` gets no such guard
 
@@ -315,9 +359,15 @@ structural guard available here.
 
 That is precisely why the same-transaction write rule for `occurred_at` is
 genuinely load-bearing rather than one convention among several. Everything else
-in this section has been handed to the database; this one thing cannot be, so it
-lives in a single repository method, with a comment saying why, and the Phase 3
-done-criteria include a consistency query that proves it held.
+in this section has been handed to the database; this one thing cannot be.
+
+So it is funnelled instead of constrained. **Exactly one service function,
+`redate_document`, writes `documents.occurred_at`** — every override path goes
+through it, and from Phase 5 on it also updates that document's
+`concept_mentions` in the same transaction. One function is the only place an
+obligation the database cannot express can be reliably attached. Phase 3
+establishes the funnel; Phase 5 adds the cascade and a consistency query that
+proves it held.
 
 ### 3. Chunks always record `page_number`, `char_start`, `char_end`.
 

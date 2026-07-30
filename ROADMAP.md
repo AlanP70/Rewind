@@ -107,21 +107,16 @@ that date came from.
 - Any inferred date outside the course's term bounds is rejected rather than
   stored.
 - `occurred_at_source` is accurate for every document — spot-checked by hand.
-- A manual override updates document and mentions atomically, verified by query.
-- **Re-dating a document cascades to every one of its `concept_mentions` rows**,
-  proven by a consistency query that returns zero rows:
+- **Exactly one service function — `redate_document` — writes
+  `documents.occurred_at`.** All three override paths (syllabus parse, filename
+  inference, manual correction) route through it; no other code touches that
+  column. Its docstring records that Phase 5 extends it to cascade to
+  `concept_mentions` in the same transaction.
 
-  ```sql
-  SELECT cm.id
-  FROM concept_mentions cm
-  JOIN documents d ON d.id = cm.document_id
-  WHERE cm.occurred_at <> d.occurred_at;
-  ```
-
-  The failure mode this catches: a user corrects a lecture's date, the document
-  row updates, and the timeline silently does not move. Nothing errors and the
-  answer is just wrong. (Phase 3 predates `concept_mentions`, so this check goes
-  in as part of Phase 5 and is run against Phase 3's override path from then on.)
+  The funnel is the point. Phase 5 adds a write that must accompany every date
+  change, and there is no constraint that can force it (see the asymmetry note in
+  `ARCHITECTURE.md`). One function is the only place that obligation can be
+  reliably attached, so it exists before there is anything to cascade to.
 
 ---
 
@@ -169,6 +164,20 @@ first-class `concepts` with alias sets.
   `EXPLAIN`.
 - The similarity threshold is a documented number with the false-merge cases that
   set it written down.
+- **`redate_document` now cascades**: re-dating a document updates every one of
+  its `concept_mentions` rows in the same transaction. Proven by a consistency
+  query returning zero rows, run after a manual re-date:
+
+  ```sql
+  SELECT cm.id
+  FROM concept_mentions cm
+  JOIN documents d ON d.id = cm.document_id
+  WHERE cm.occurred_at <> d.occurred_at;
+  ```
+
+  The failure mode this catches: a user corrects a lecture's date, the document
+  row updates, and the timeline silently does not move. Nothing errors; the answer
+  is just wrong.
 - Phase 4's eval set still passes.
 
 ---
