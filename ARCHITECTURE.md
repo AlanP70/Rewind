@@ -23,7 +23,7 @@ occurrences cheaply.
 | Frontend state | React Query (server state), Zustand (client state) |
 | Frontend viz | React Flow (Phase 6), Framer Motion (Phase 7) |
 | Backend | FastAPI, Pydantic, SQLAlchemy, Alembic |
-| Database | Postgres 16 + pgvector |
+| Database | Postgres 17 + pgvector |
 | Jobs | arq + Redis |
 | Storage / DB / Auth | Supabase |
 | Deploy | Vercel (frontend), Railway (backend, worker, Redis) |
@@ -114,7 +114,7 @@ features/timeline/
 
 ## Data model
 
-Ten tables. Postgres 16, `vector` extension enabled in the first migration.
+Ten tables. Postgres 17, `vector` extension enabled in the first migration.
 
 ### `users`
 `id`, `email`, `created_at`

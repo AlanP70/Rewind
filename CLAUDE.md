@@ -12,7 +12,7 @@ Full detail: `ARCHITECTURE.md`. Phase plan: `ROADMAP.md`.
 - **Frontend:** Next.js App Router, TypeScript, Tailwind, shadcn/ui,
   React Query (server state), Zustand (client state), React Flow (Phase 6),
   Framer Motion (Phase 7)
-- **Backend:** FastAPI, SQLAlchemy, Alembic, Postgres 16 + pgvector
+- **Backend:** FastAPI, SQLAlchemy, Alembic, Postgres 17 + pgvector
 - **Jobs:** arq + Redis — **not Celery**
 - **Storage/DB/Auth:** Supabase
 - **Deploy:** Vercel (frontend), Railway (backend + worker + Redis)
