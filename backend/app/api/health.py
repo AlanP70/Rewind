@@ -16,7 +16,7 @@ async def health() -> dict[str, str]:
 
 @router.get("/health/ready")
 async def ready(response: Response) -> dict[str, str]:
-    """503 if any dependency is down. Railway's healthcheck target: always-200 as
+    """503 if any dependency is down. Render's healthcheck target: always-200 as
     the only contract means a dead Postgres reads as a healthy deploy and traffic
     keeps being routed to it."""
     deps = await check_dependencies()
