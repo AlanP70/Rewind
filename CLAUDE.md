@@ -71,13 +71,20 @@ changing the schema.
 
 ## Current phase
 
-**Phase 0 — deploy an empty app end to end.** Scope: docker-compose (Postgres +
-pgvector, Redis), FastAPI with `GET /health` and `GET /health/ready`, CORS from an
-env var, Alembic with one migration enabling `vector`, a Next.js page that
-displays `/health`, `.env.example`, README. Nothing else.
+**Phase 1 — ingestion.** Scope: migration creating `users`, `courses`,
+`documents`, `chunks`; PDF text extraction that retains page boundaries and
+character offsets; chunking that records `page_number`, `chunk_index`,
+`char_start`, `char_end`; batched embeddings into `chunks.embedding vector(1536)`;
+a CLI `ingest <course_id> <path>`. **No UI, no queue** — ingestion runs
+synchronously in the CLI. Nothing else.
 
-**Read ROADMAP.md's Phase 0 section before writing any of it** — it carries
-constraints that are not guessable: Python 3.12 via `uv` (system Python is 3.14.4
-and must not be used), the Postgres major version must match what Supabase
-provisions and must be asked for rather than defaulted, and React Query is
-provider-plus-one-inline-`useQuery` with no scaffolding.
+**Read ROADMAP.md's Phase 1 section before writing any of it** — the "done when"
+bar is not guessable: for a random sample of chunks, `char_start`/`char_end` must
+slice the source page text back to exactly the stored `content`, verified rather
+than assumed, and re-ingesting the same document must not create duplicates.
+
+Phase 0 is closed. Its deploy is live end to end (Vercel → Render → Supabase +
+Redis, CORS scoped to the Vercel domain), and both remaining checks were run on
+2026-08-01: the degraded path (`/health` → 200 `{"status":"degraded","db":"down"}`,
+`/health/ready` → 503, both recovering with no app restart) and a fresh clone
+reaching a running local app using only the README.
