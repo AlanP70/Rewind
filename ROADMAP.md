@@ -61,6 +61,17 @@ there is nothing to debug except the deployment.
   `backend/start.sh`, which migrates and then `exec`s uvicorn — Render's Docker
   Command field cannot be trusted to parse a compound command, and its free tier
   has no pre-deploy step. **Leave that field blank** so the Dockerfile wins.
+- **The Key Value service and the web service must be in the same Render
+  region.** The internal URL (`redis://red-xxxxxxxx:6379`, no password) resolves
+  only within one region: a Key Value in Ohio and a web service in Oregon fail
+  with `gaierror: Name or service not known` on a hostname that is otherwise
+  perfectly correct, so it reads as a bad `REDIS_URL` rather than as a topology
+  mistake. The tell is `gaierror` rather than a refused connection or a timeout —
+  the name does not exist in that resolver's view at all. Region is fixed at
+  creation, so the fix is to recreate the instance in the web service's region
+  and update `REDIS_URL`. The cross-region alternative is the external URL, which
+  is `rediss://` with a password over the public internet — TLS and egress on
+  every call, for a connection that should never leave Render's network.
 
 **Done when**
 - `docker compose up` gives working Postgres and Redis.
@@ -289,7 +300,9 @@ without them uploading anything first.
   is irrelevant, because the only thing touching Redis is a health ping with no
   state to lose. Once arq holds a job queue there, a restart mid-document silently
   loses enqueued work, and the honest fix is a paid plan rather than
-  application-level retry logic.
+  application-level retry logic. Whatever instance ends up serving arq, it has to
+  sit in the web service's region — see Phase 0's constraints for why, and for
+  what the failure looks like when it doesn't.
 
 - **Render's free web service spins down when idle, so `/health/ready` is not an
   uptime check there.** Render's own healthcheck does not keep a free instance
