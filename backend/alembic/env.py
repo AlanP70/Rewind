@@ -4,6 +4,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from app.core.config import settings
+from app.models import Base
 
 config = context.config
 
@@ -13,8 +14,7 @@ if config.config_file_name is not None:
 # Sync driver, deliberately: Alembic runs migrations synchronously.
 config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
 
-# No models yet — Phase 0 has no tables. Autogenerate arrives with Phase 1.
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
