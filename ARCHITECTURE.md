@@ -297,14 +297,15 @@ correct.
 silently, and every RLS policy built on it is then wrong in a way nothing
 detects. So the parents expose the pair and the children reference it.
 
-`documents`, `concepts`, and `chunks` each carry a `UNIQUE (id, user_id)`
-constraint — and `chunks` a second one, `UNIQUE (id, document_id)`. Redundant on
-their own — `id` is already unique — but they are what make those pairs
-referenceable keys. Every child then uses a **composite foreign key** that
-includes the column being pinned:
+`courses`, `documents`, `concepts`, and `chunks` each carry a
+`UNIQUE (id, user_id)` constraint — and `chunks` a second one,
+`UNIQUE (id, document_id)`. Redundant on their own — `id` is already unique — but
+they are what make those pairs referenceable keys. Every child then uses a
+**composite foreign key** that includes the column being pinned:
 
 | Child | Composite FK | Parent |
 | --- | --- | --- |
+| `documents` | `(course_id, user_id)` | `courses (id, user_id)` |
 | `chunks` | `(document_id, user_id)` | `documents (id, user_id)` |
 | `processing_runs` | `(document_id, user_id)` | `documents (id, user_id)` |
 | `concept_aliases` | `(concept_id, user_id)` | `concepts (id, user_id)` |
@@ -314,10 +315,21 @@ includes the column being pinned:
 | `concept_mentions` | `(concept_id, user_id)` | `concepts (id, user_id)` |
 | `concept_mentions` | `(chunk_id, document_id)` | `chunks (id, document_id)` |
 
-The effect: a chunk cannot be attached to another user's document, and a mention
-cannot bind a concept and a chunk that belong to different users. Postgres
-rejects the row on write. Cross-tenant corruption stops being discouraged and
-becomes unrepresentable.
+The effect: a document cannot be filed under another user's course, a chunk
+cannot be attached to another user's document, and a mention cannot bind a
+concept and a chunk that belong to different users. Postgres rejects the row on
+write. Cross-tenant corruption stops being discouraged and becomes
+unrepresentable.
+
+**Correction, 2026-08-02.** The `documents → courses` row and `courses`'
+`UNIQUE (id, user_id)` were missing from the original enumeration. That was an
+omission, not a decision — it left exactly the divergence this section exists to
+prevent (a document owned by one user, filed under another user's course) fully
+representable, with ownership intact and the attribution wrong. Both were added
+to migration `0002` before it was ever applied to Supabase, so no data existed
+and no backfill was needed. Recorded here because a reader comparing the schema
+against an earlier draft of this list would otherwise find an unexplained
+constraint.
 
 #### The redundant uniques on `chunks` cannot be consolidated
 

@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
@@ -41,6 +42,13 @@ class DocumentStatus(StrEnum):
 class Document(Base, CreatedAt):
     __tablename__ = "documents"
     __table_args__ = (
+        # A document cannot be filed under another user's course. Without the pair,
+        # ownership and course attribution can diverge silently.
+        ForeignKeyConstraint(
+            ["course_id", "user_id"],
+            ["courses.id", "courses.user_id"],
+            name="fk_documents_course_id_user_id",
+        ),
         # Makes (id, user_id) a referenceable key so `chunks` can pin ownership
         # with a composite FK. Redundant on its own -- id is already unique.
         UniqueConstraint("id", "user_id", name="uq_documents_id_user_id"),
@@ -73,9 +81,8 @@ class Document(Base, CreatedAt):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
-    course_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("courses.id"), nullable=False
-    )
+    # No standalone FK: the composite constraint above covers it.
+    course_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
 
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(512), nullable=False)

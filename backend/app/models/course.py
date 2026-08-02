@@ -1,7 +1,7 @@
 import uuid
 from datetime import date
 
-from sqlalchemy import Date, ForeignKey, String, text
+from sqlalchemy import Date, ForeignKey, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,6 +10,10 @@ from app.models.base import Base, CreatedAt
 
 class Course(Base, CreatedAt):
     __tablename__ = "courses"
+    __table_args__ = (
+        # Referenceable key so `documents` can pin course and owner together.
+        UniqueConstraint("id", "user_id", name="uq_courses_id_user_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")

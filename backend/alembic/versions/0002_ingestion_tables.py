@@ -75,6 +75,8 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
         ),
+        # Referenceable key for the composite FK from documents.
+        sa.UniqueConstraint("id", "user_id", name="uq_courses_id_user_id"),
     )
 
     op.create_table(
@@ -91,12 +93,7 @@ def upgrade() -> None:
             sa.ForeignKey("users.id"),
             nullable=False,
         ),
-        sa.Column(
-            "course_id",
-            sa.dialects.postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("courses.id"),
-            nullable=False,
-        ),
+        sa.Column("course_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("kind", sa.String(32), nullable=False),
         sa.Column("title", sa.String(512), nullable=False),
         sa.Column("storage_path", sa.Text, nullable=False),
@@ -106,6 +103,12 @@ def upgrade() -> None:
         sa.Column("page_count", sa.Integer),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+        ),
+        # A document cannot be filed under another user's course.
+        sa.ForeignKeyConstraint(
+            ["course_id", "user_id"],
+            ["courses.id", "courses.user_id"],
+            name="fk_documents_course_id_user_id",
         ),
         # Referenceable key for the composite FK from chunks.
         sa.UniqueConstraint("id", "user_id", name="uq_documents_id_user_id"),
