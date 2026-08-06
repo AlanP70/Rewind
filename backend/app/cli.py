@@ -16,8 +16,10 @@ from pathlib import Path
 from app.core.db import async_session
 from app.models.user import SEED_USER_ID
 from app.schemas.ingestion import PlannedChunk
+from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
-from app.services.ingestion import IngestError, create_course, ingest_document, plan_chunks
+from app.services.ingestion import create_course, ingest_document, plan_chunks
+from app.services.verification import verify_document
 
 
 def _check_offsets(pages: list[str], planned: list[PlannedChunk]) -> list[str]:
@@ -113,6 +115,37 @@ async def _ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _verify(args: argparse.Namespace) -> int:
+    async with async_session() as session:
+        report = await verify_document(
+            session, user_id=SEED_USER_ID, document_id=args.document_id
+        )
+
+    print(f"document {report.document_id}  {report.storage_path}")
+    print(f"  chunks checked: {report.chunk_count}")
+    # Flushed so the failure detail on stderr lands after this header rather than
+    # ahead of it when both are going to the same terminal.
+    print(f"  pages: {report.pages_extracted} extracted, {report.pages_stored} recorded", flush=True)
+
+    if report.pages_stored != report.pages_extracted:
+        print(
+            "  FAILED: page count changed since ingestion - the PDF or the "
+            "extraction library is not what it was",
+            file=sys.stderr,
+        )
+
+    if report.failures:
+        print(f"  FAILED: {len(report.failures)} chunk(s) do not match:", file=sys.stderr)
+        for failure in report.failures[:10]:
+            print(f"    chunk {failure.chunk_index} (page {failure.page_number}): {failure.reason}", file=sys.stderr)
+
+    if not report.ok:
+        return 1
+
+    print(f"  OK: all {report.chunk_count} chunks slice back byte for byte.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -142,10 +175,16 @@ def main() -> int:
     )
     ingest.set_defaults(handler=_ingest)
 
+    verify = subcommands.add_parser(
+        "verify", help="re-extract a document's PDF and check every chunk's offsets"
+    )
+    verify.add_argument("document_id", type=uuid.UUID)
+    verify.set_defaults(handler=_verify)
+
     args = parser.parse_args()
     try:
         return asyncio.run(args.handler(args))
-    except IngestError as error:
+    except ServiceError as error:
         print(error, file=sys.stderr)
         return 1
 

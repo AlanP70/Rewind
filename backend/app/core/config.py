@@ -1,10 +1,8 @@
-from pathlib import Path
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# app/core/config.py -> app/core -> app -> backend. Resolving the path here means
-# the app reads the same .env no matter which directory uvicorn was started from.
-BACKEND_DIR = Path(__file__).resolve().parents[2]
+# Resolved from the package location, not the working directory, so the app reads
+# the same .env no matter where uvicorn was started from.
+from app.core.paths import BACKEND_DIR
 
 
 class Settings(BaseSettings):

@@ -16,17 +16,15 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.paths import to_storage_path
 from app.models import Course, DocumentStatus
 from app.repositories import chunks as chunks_repo
 from app.repositories import courses as courses_repo
 from app.repositories import documents as documents_repo
 from app.schemas.ingestion import PlannedChunk
 from app.services.chunking import chunk_page
+from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
-
-
-class IngestError(Exception):
-    """Something the user can fix. The CLI prints it and exits non-zero."""
 
 
 @dataclass(frozen=True)
@@ -79,7 +77,7 @@ async def create_course(
     interpolating within them, so a backwards term would silently produce
     nonsense dates rather than an error."""
     if ends_on < starts_on:
-        raise IngestError(f"course ends_on {ends_on} is before starts_on {starts_on}")
+        raise ServiceError(f"course ends_on {ends_on} is before starts_on {starts_on}")
 
     return await courses_repo.create(
         session,
@@ -114,11 +112,15 @@ async def ingest_document(
     """
     course = await courses_repo.get(session, course_id, user_id)
     if course is None:
-        raise IngestError(f"no course {course_id} for this user")
+        raise ServiceError(f"no course {course_id} for this user")
 
-    # Canonical, so the same file reached by two different relative paths is
-    # recognised as one document rather than two.
-    storage_path = str(path.resolve())
+    # Canonical and repo-relative, so the same file reached by two different
+    # relative paths is one document, and the row still means something on a
+    # machine that is not this one.
+    try:
+        storage_path = to_storage_path(path)
+    except ValueError as error:
+        raise ServiceError(str(error)) from error
 
     document = await documents_repo.get_by_storage_path(session, user_id, storage_path)
     reused = document is not None
@@ -126,12 +128,12 @@ async def ingest_document(
 
     if document is not None:
         if document.course_id != course_id:
-            raise IngestError(
+            raise ServiceError(
                 f"{storage_path} is already ingested under course {document.course_id}"
             )
         existing = await chunks_repo.count_for_document(session, document.id)
         if existing and not force:
-            raise IngestError(
+            raise ServiceError(
                 f"{storage_path} already has {existing} chunks; pass --force to replace them"
             )
         replaced = await chunks_repo.delete_for_document(session, document.id)
@@ -148,7 +150,7 @@ async def ingest_document(
     pages = extract_pages(path)
     planned = plan_chunks(pages)
     if not planned:
-        raise IngestError(f"{path} yielded no text; is it a scan with no text layer?")
+        raise ServiceError(f"{path} yielded no text; is it a scan with no text layer?")
 
     await chunks_repo.insert_many(
         session, user_id=user_id, document_id=document.id, planned=planned

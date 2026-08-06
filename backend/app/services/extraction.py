@@ -13,9 +13,14 @@ step that lives on only one of those two paths turns every offset into a lie.
 If normalisation is ever wanted, it goes in one named function called by both.
 """
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pdfplumber
+
+from app.core.paths import BACKEND_DIR
 
 
 def extract_pages(path: Path) -> list[str]:
@@ -31,3 +36,34 @@ def extract_pages(path: Path) -> list[str]:
     with pdfplumber.open(path) as pdf:
         # extract_text() returns None for a page with no text objects.
         return [page.extract_text() or "" for page in pdf.pages]
+
+
+def extract_pages_in_subprocess(path: Path) -> list[str]:
+    """The same thing, in a fresh interpreter. This is what `verify` calls.
+
+    Verification that reuses pages already in memory can only prove that a list
+    equals itself. Extracting again in a process that shares nothing is what
+    makes the check able to fail: it re-reads the file from disk, re-runs
+    pdfplumber, and so catches extraction that is not deterministic across runs
+    or across a library version bump -- exactly the failure the `==` pins exist
+    to make loud, and the one that would otherwise surface much later as
+    highlights landing on the wrong passage.
+    """
+    completed = subprocess.run(
+        [sys.executable, "-m", "app.services.extraction", str(path)],
+        capture_output=True,
+        # ASCII-escaped JSON crosses the pipe, so this decode is safe regardless
+        # of the console code page.
+        text=True,
+        encoding="utf-8",
+        cwd=BACKEND_DIR,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+if __name__ == "__main__":
+    # Written rather than printed, and ASCII-escaped by default: this stdout is a
+    # pipe carrying data, and the Windows console code page (cp1252) cannot encode
+    # characters this corpus actually contains, such as U+2022.
+    sys.stdout.write(json.dumps(extract_pages(Path(sys.argv[1]))))

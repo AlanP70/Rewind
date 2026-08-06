@@ -200,6 +200,36 @@ fact, so they are checked at three levels that fail for different reasons:
    Postgres *and* non-deterministic extraction, neither of which an in-memory
    check can structurally detect.
 
+**`storage_path` is repo-relative, resolved to absolute at read time**
+
+An absolute path is machine-specific data written into the database: `verify`
+re-extracts from `storage_path`, so storing `C:\Users\...` means verification can
+only ever pass on one laptop. That is the same class of mistake as hardcoding
+`localhost`. Paths are therefore stored relative to the repo root, with POSIX
+separators, and resolved against the repo root when read.
+
+The test corpus is committed for the same reason — a repo that cannot run its own
+`verify` on a clean clone fails the fresh-clone bar set in Phase 0. The MIT OCW
+material is CC-licensed, so redistributing it is fine, and it is the same corpus
+Phase 7's demo course uses.
+
+**This column becomes a storage key when Supabase Storage lands in Phase 2.**
+Phase 2 replacing it is a reason to change it again later, not a reason to write
+something knowingly broken now.
+
+**Known deviations and outstanding gaps**
+
+- **Course term bounds (`ends_on >= starts_on`) are validated in the service, not
+  by a CHECK constraint**, which is inconsistent with every comparable rule in the
+  schema. Migration `0002` is already applied, and fixing this properly means an
+  `0003` for a rule nothing depends on yet. Fold it in if `courses` is touched
+  again for another reason; do not spend a migration on it in isolation.
+- **The re-ingest guard has no automated test.** That `--force` is required, and
+  that a re-ingest replaces rather than duplicates chunks, is currently verified
+  by running the CLI by hand. A regression test needs database fixtures; add it
+  when fixtures get built for something else, so the setup cost is amortised
+  rather than paid for a single test.
+
 **Done when**
 - A real lecture PDF ingests end to end.
 - For a random sample of chunks, `char_start`/`char_end` slice the source page

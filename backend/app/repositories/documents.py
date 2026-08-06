@@ -8,6 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Document
 
 
+async def get(
+    session: AsyncSession, document_id: uuid.UUID, user_id: uuid.UUID
+) -> Document | None:
+    result = await session.execute(
+        select(Document).where(Document.id == document_id, Document.user_id == user_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_by_storage_path(
     session: AsyncSession, user_id: uuid.UUID, storage_path: str
 ) -> Document | None:

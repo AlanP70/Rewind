@@ -10,6 +10,14 @@ from app.models import Chunk
 from app.schemas.ingestion import PlannedChunk
 
 
+async def list_for_document(session: AsyncSession, document_id: uuid.UUID) -> list[Chunk]:
+    """Every chunk of a document, in reading order."""
+    result = await session.execute(
+        select(Chunk).where(Chunk.document_id == document_id).order_by(Chunk.chunk_index)
+    )
+    return list(result.scalars().all())
+
+
 async def count_for_document(session: AsyncSession, document_id: uuid.UUID) -> int:
     result = await session.execute(
         select(func.count()).select_from(Chunk).where(Chunk.document_id == document_id)
