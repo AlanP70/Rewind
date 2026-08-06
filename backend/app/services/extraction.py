@@ -19,8 +19,10 @@ import sys
 from pathlib import Path
 
 import pdfplumber
+from pdfplumber.utils.exceptions import PdfminerException
 
 from app.core.paths import BACKEND_DIR
+from app.services.errors import ServiceError
 
 
 def extract_pages(path: Path) -> list[str]:
@@ -32,10 +34,27 @@ def extract_pages(path: Path) -> list[str]:
     Pages with no extractable text come back as `""` rather than being skipped,
     so the list index stays aligned with the page number. An image-only slide
     deck is a legitimately empty page, not an error.
+
+    A file that is not a readable PDF raises `ServiceError`, not the underlying
+    `PdfminerException`. That translation is load-bearing rather than cosmetic:
+    `ServiceError` is what marks a failure **permanent**, and a malformed PDF
+    fails identically on every attempt. Left as a library exception it would be
+    classified transient and retried three times, turning one deterministic
+    problem into three failed runs that look like flakiness.
+
+    **Do not "simplify" this by letting the library exception through.** It reads
+    like a wrapper that only changes the message. What it actually does is carry
+    the permanent/transient decision to the one place that can make it: the retry
+    classifier upstream sees an exception type and nothing else, and cannot tell a
+    malformed PDF from a dropped socket. Any deterministic library failure added
+    here needs the same treatment.
     """
-    with pdfplumber.open(path) as pdf:
-        # extract_text() returns None for a page with no text objects.
-        return [page.extract_text() or "" for page in pdf.pages]
+    try:
+        with pdfplumber.open(path) as pdf:
+            # extract_text() returns None for a page with no text objects.
+            return [page.extract_text() or "" for page in pdf.pages]
+    except PdfminerException as error:
+        raise ServiceError(f"could not read {path.name} as a PDF: {error}") from error
 
 
 def extract_pages_in_subprocess(path: Path) -> list[str]:

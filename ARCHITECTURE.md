@@ -31,7 +31,7 @@ occurrences cheaply.
 
 **"Key Value" is Render's name for its Redis-compatible service.** Nothing in the
 code changes because of it: the dependency is still `redis`, the setting is still
-`REDIS_URL`, and arq still talks Redis in Phase 3. Only the dashboard label and
+`REDIS_URL`, and arq still talks Redis in Phase 2. Only the dashboard label and
 the free plan's persistence guarantees differ — see `ROADMAP.md`'s deferred
 section for the latter, which matters once jobs are real.
 
@@ -255,6 +255,18 @@ One row per ingestion attempt. Separate from `documents.status` on purpose:
 `documents` holds *current* state, `processing_runs` holds *history*. When a PDF
 fails to parse at 2am, this table is the only thing that can say why, how many
 times, and whether a retry fixed it.
+
+**`attempts` is the attempt number of *this* row, 1-based — not a counter that
+gets incremented in place.** Attempt 3 of a document is a third row carrying
+`attempts = 3`, with its own `error` and its own timings. The alternative reading
+(one row per job, counter bumped on retry) overwrites the first error with the
+second, which throws away the case worth debugging: a document that failed
+transiently, then failed differently, then succeeded.
+
+The two status vocabularies are deliberately disjoint, so no code can read one
+where it meant the other. `documents.status` is `pending` / `processing` /
+`ready` / `failed`; `processing_runs.status` is `queued` / `running` /
+`succeeded` / `failed`.
 
 ---
 

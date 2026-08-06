@@ -17,7 +17,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.paths import to_storage_path
-from app.models import Course, DocumentStatus
+from app.models import Course, Document, DocumentStatus
 from app.repositories import chunks as chunks_repo
 from app.repositories import courses as courses_repo
 from app.repositories import documents as documents_repo
@@ -25,6 +25,15 @@ from app.schemas.ingestion import PlannedChunk
 from app.services.chunking import chunk_page
 from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
+
+
+@dataclass(frozen=True)
+class ResolvedDocument:
+    """A document row that exists and is cleared for (re)processing."""
+
+    document: Document
+    reused: bool
+    existing_chunks: int
 
 
 @dataclass(frozen=True)
@@ -90,7 +99,7 @@ async def create_course(
     )
 
 
-async def ingest_document(
+async def resolve_document(
     session: AsyncSession,
     *,
     user_id: uuid.UUID,
@@ -99,8 +108,18 @@ async def ingest_document(
     kind: str,
     title: str,
     force: bool = False,
-) -> IngestResult:
-    """Extract, chunk and store one PDF.
+) -> ResolvedDocument:
+    """Find or create the document row, and decide whether processing may proceed.
+
+    Split from `ingest_document` so a `processing_runs` row can be opened between
+    the two: a run points at a document, so the document has to exist before the
+    expensive, failure-prone part starts. Otherwise a PDF that fails to parse
+    leaves no processing history at all, which is the one case the history exists
+    for.
+
+    Everything here is a precondition about the *request* -- unknown course, path
+    outside the repo, existing chunks without `force`. None of it is a processing
+    failure, so none of it produces a run.
 
     Re-ingesting the same path is the same document, not a second one -- that is
     what `UNIQUE (user_id, storage_path)` encodes. A re-ingest that would destroy
@@ -123,21 +142,8 @@ async def ingest_document(
         raise ServiceError(str(error)) from error
 
     document = await documents_repo.get_by_storage_path(session, user_id, storage_path)
-    reused = document is not None
-    replaced = 0
 
-    if document is not None:
-        if document.course_id != course_id:
-            raise ServiceError(
-                f"{storage_path} is already ingested under course {document.course_id}"
-            )
-        existing = await chunks_repo.count_for_document(session, document.id)
-        if existing and not force:
-            raise ServiceError(
-                f"{storage_path} already has {existing} chunks; pass --force to replace them"
-            )
-        replaced = await chunks_repo.delete_for_document(session, document.id)
-    else:
+    if document is None:
         document = await documents_repo.create(
             session,
             user_id=user_id,
@@ -146,6 +152,34 @@ async def ingest_document(
             title=title,
             storage_path=storage_path,
         )
+        return ResolvedDocument(document=document, reused=False, existing_chunks=0)
+
+    if document.course_id != course_id:
+        raise ServiceError(
+            f"{storage_path} is already ingested under course {document.course_id}"
+        )
+
+    existing = await chunks_repo.count_for_document(session, document.id)
+    if existing and not force:
+        raise ServiceError(
+            f"{storage_path} already has {existing} chunks; pass --force to replace them"
+        )
+
+    return ResolvedDocument(document=document, reused=True, existing_chunks=existing)
+
+
+async def ingest_document(
+    session: AsyncSession, *, resolved: ResolvedDocument, path: Path
+) -> IngestResult:
+    """Extract, chunk and store one PDF into an already-resolved document.
+
+    Always replaces: the `--force` guard was answered in `resolve_document`, so by
+    the time execution is here, rebuilding is what was asked for. That is also
+    what makes a retry safe -- attempt 2 clears attempt 1's partial chunks rather
+    than colliding with them.
+    """
+    document = resolved.document
+    replaced = await chunks_repo.delete_for_document(session, document.id)
 
     pages = extract_pages(path)
     planned = plan_chunks(pages)
@@ -153,7 +187,7 @@ async def ingest_document(
         raise ServiceError(f"{path} yielded no text; is it a scan with no text layer?")
 
     await chunks_repo.insert_many(
-        session, user_id=user_id, document_id=document.id, planned=planned
+        session, user_id=document.user_id, document_id=document.id, planned=planned
     )
 
     document.page_count = len(pages)
@@ -167,5 +201,5 @@ async def ingest_document(
         page_count=len(pages),
         chunk_count=len(planned),
         replaced_chunks=replaced,
-        reused_document=reused,
+        reused_document=resolved.reused,
     )

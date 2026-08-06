@@ -7,6 +7,7 @@ same services this does.
 
 import argparse
 import asyncio
+import logging
 import statistics
 import sys
 import uuid
@@ -16,10 +17,10 @@ from pathlib import Path
 from app.core.db import async_session
 from app.models.user import SEED_USER_ID
 from app.schemas.ingestion import PlannedChunk
-from app.services.embedding import embed_document, estimate, pending_chunks
 from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
-from app.services.ingestion import create_course, ingest_document, plan_chunks
+from app.services.ingestion import create_course, plan_chunks
+from app.services.processing import embed_with_estimate, process_document
 from app.services.verification import verify_document
 
 
@@ -93,10 +94,10 @@ async def _ingest(args: argparse.Namespace) -> int:
         print(f"\nOK: all {len(planned)} chunks slice back to their page text. Nothing written.")
         return 0
 
-    # One transaction for the whole document: a crash between deleting old chunks
-    # and writing new ones must not leave a document with none.
-    async with async_session() as session, session.begin():
-        result = await ingest_document(
+    # `process_document` owns its own commits -- it has to, because the
+    # `processing_runs` row must be durable while the work is still running.
+    async with async_session() as session:
+        result = await process_document(
             session,
             user_id=SEED_USER_ID,
             course_id=args.course_id,
@@ -104,51 +105,20 @@ async def _ingest(args: argparse.Namespace) -> int:
             kind=args.kind,
             title=args.title or path.stem,
             force=args.force,
+            embed=not args.no_embed,
         )
 
-    verb = "re-ingested" if result.reused_document else "ingested"
-    replaced = f" (replaced {result.replaced_chunks})" if result.replaced_chunks else ""
-    print(f"{verb} document {result.document_id}")
-    print(f"  pages: {result.page_count}")
-    print(f"  chunks: {result.chunk_count}{replaced}", flush=True)
-
-    if args.no_embed:
-        print("  status: processing - embeddings skipped")
-        return 0
-
-    # A separate session from the chunk transaction above, which has committed.
-    # Embedding commits per batch and must not be able to roll that back.
-    async with async_session() as session:
-        return await _run_embedding(session, result.document_id)
-
-
-async def _run_embedding(session, document_id: uuid.UUID) -> int:
-    """Show the cost, then spend it. Shared by `ingest` and `embed`."""
-    pending = await pending_chunks(session, document_id)
-    if not pending:
-        print("  embeddings: already complete, nothing to spend")
-    else:
-        cost = estimate(pending)
-        # Two decimal places would print a real cost of $0.000033 as $0.00, which
-        # is exactly the number this line exists to show. Small runs get the
-        # precision they need; a semester-sized one reads normally.
-        dollars = f"${cost.estimated_usd:.2f}" if cost.estimated_usd >= 0.01 else f"${cost.estimated_usd:.6f}"
-        print(
-            f"  embedding {cost.chunk_count} chunk(s), "
-            f"~{cost.estimated_tokens} tokens, ~{dollars} (estimate)",
-            flush=True,
-        )
-
-    result = await embed_document(session, user_id=SEED_USER_ID, document_id=document_id)
-    print(f"  embedded: {result.embedded}, remaining: {result.remaining}")
-    print(f"  status: {result.status}")
-    return 0 if result.remaining == 0 else 1
+    # Progress is logged by the service, not printed here, so the worker reports
+    # the same things in slice 3. What is left is the exit code.
+    return 0 if result.embedding is None or result.embedding.remaining == 0 else 1
 
 
 async def _embed(args: argparse.Namespace) -> int:
     async with async_session() as session:
-        print(f"document {args.document_id}")
-        return await _run_embedding(session, args.document_id)
+        result = await embed_with_estimate(
+            session, user_id=SEED_USER_ID, document_id=args.document_id
+        )
+    return 0 if result.remaining == 0 else 1
 
 
 async def _verify(args: argparse.Namespace) -> int:
@@ -183,6 +153,16 @@ async def _verify(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    # Services report progress through `logging`, so the identical lines land in
+    # the worker's log once slice 3 exists. Bare format because the audience here
+    # is a person at a terminal, not a log aggregator.
+    #
+    # INFO is raised for `app` alone, not the root logger: httpx logs every
+    # request at INFO, so a global INFO turns each embedding batch into a line of
+    # URL noise between the lines worth reading.
+    logging.basicConfig(level=logging.WARNING, format="%(message)s", stream=sys.stdout)
+    logging.getLogger("app").setLevel(logging.INFO)
+
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     subcommands = parser.add_subparsers(dest="command", required=True)
 

@@ -71,17 +71,31 @@ changing the schema.
 
 ## Current phase
 
-**Phase 1 — ingestion.** Scope: migration creating `users`, `courses`,
-`documents`, `chunks`; PDF text extraction that retains page boundaries and
-character offsets; chunking that records `page_number`, `chunk_index`,
-`char_start`, `char_end`; batched embeddings into `chunks.embedding vector(1536)`;
-a CLI `ingest <course_id> <path>`. **No UI, no queue** — ingestion runs
-synchronously in the CLI. Nothing else.
+**Phase 2 — job queue.** Scope: migration for `processing_runs`; an arq worker
+whose task calls the *same service* as the CLI; `POST /documents` that enqueues
+and returns a document id immediately; `GET /documents/{id}/status` reporting
+status and progress; `features/upload/` with drag-drop and a polling progress UI;
+retry with attempt counting and a recorded `error` on failure. Nothing else — no
+search, no dating, no concepts.
 
-**Read ROADMAP.md's Phase 1 section before writing any of it** — the "done when"
-bar is not guessable: for a random sample of chunks, `char_start`/`char_end` must
-slice the source page text back to exactly the stored `content`, verified rather
-than assumed, and re-ingesting the same document must not create duplicates.
+**Read ROADMAP.md's Phase 2 section before writing any of it.** The "done when"
+bar is behavioural, not structural: a corrupt PDF must end `failed` with a
+*readable* error in `processing_runs` and the API must say so, two documents
+uploaded at once must both complete, and the worker must survive a restart
+mid-job without losing the document.
+
+Two things carried in from earlier phases that bear on this one. Render's free
+Key Value plan has **no persistence** (see ROADMAP's deferred section), so Redis
+cannot be the record of truth for outstanding work — Postgres is, and Redis is
+only the dispatch mechanism. And Phase 1's note that `storage_path` becomes a
+storage key when Supabase Storage lands: an upload endpoint and a worker in a
+separate process cannot share a local filesystem path.
+
+Phase 1 is closed, tagged `phase-1-complete`. A real lecture PDF ingests end to
+end, all three offset-verification layers pass, `verify` was proved able to fail
+by fault injection, re-ingest is idempotent, and embedding is resumable with
+per-batch commits. Documents currently reach `ready` only when every chunk has a
+vector.
 
 Phase 0 is closed. Its deploy is live end to end (Vercel → Render → Supabase +
 Redis, CORS scoped to the Vercel domain), and both remaining checks were run on

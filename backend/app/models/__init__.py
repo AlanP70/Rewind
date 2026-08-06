@@ -8,10 +8,12 @@ from app.models.base import Base
 from app.models.chunk import EMBEDDING_DIMENSIONS, Chunk
 from app.models.course import Course
 from app.models.document import Document, DocumentKind, DocumentStatus, OccurredAtSource
+from app.models.processing_run import TERMINAL_STATUSES, ProcessingRun, RunStatus
 from app.models.user import User
 
 __all__ = [
     "EMBEDDING_DIMENSIONS",
+    "TERMINAL_STATUSES",
     "Base",
     "Chunk",
     "Course",
@@ -19,5 +21,7 @@ __all__ = [
     "DocumentKind",
     "DocumentStatus",
     "OccurredAtSource",
+    "ProcessingRun",
+    "RunStatus",
     "User",
 ]

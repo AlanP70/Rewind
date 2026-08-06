@@ -241,11 +241,13 @@ something knowingly broken now.
   schema. Migration `0002` is already applied, and fixing this properly means an
   `0003` for a rule nothing depends on yet. Fold it in if `courses` is touched
   again for another reason; do not spend a migration on it in isolation.
-- **The re-ingest guard has no automated test.** That `--force` is required, and
-  that a re-ingest replaces rather than duplicates chunks, is currently verified
-  by running the CLI by hand. A regression test needs database fixtures; add it
-  when fixtures get built for something else, so the setup cost is amortised
-  rather than paid for a single test.
+- ~~**The re-ingest guard has no automated test.**~~ **Closed in Phase 2,
+  slice 1**, on the amortisation condition this item set: Phase 2 needed database
+  fixtures anyway, so `tests/conftest.py` and `tests/test_reingest.py` landed
+  together. The suite runs against a separate `rewind_test` database, built by
+  running the real migrations rather than `Base.metadata.create_all` — a suite
+  that builds its schema from the models cannot notice the models and the
+  migrations drifting apart.
 
 **Done when**
 - A real lecture PDF ingests end to end.
@@ -293,6 +295,143 @@ visible.
 - `GET /documents/{id}/status` reports current status and progress.
 - `features/upload/` — drag-drop upload plus a polling progress UI.
 - Retry with attempt counting and a recorded `error` on failure.
+
+**Constraints settled before writing any of it**
+
+- **Postgres is the record of intent; Redis is only the dispatch mechanism.**
+  `POST /documents` writes the `documents` row *and* a `processing_runs` row at
+  `queued`, commits, and enqueues only then. This is what makes Render's
+  no-persistence free Key Value tier (see the deferred section) survivable
+  without changing the architecture: if Redis drops the queue, the run row is
+  still sitting at `queued`, so the work is **visible as outstanding** rather
+  than evaporated. The failure this eliminates is the silent one — a user gets a
+  document id back, Redis restarts, and the document sits at `pending` forever
+  with no record that anything was ever meant to happen to it, which is
+  indistinguishable from a bug.
+
+  **No automatic re-drive sweeper is built.** The deferred section is right that
+  the honest fix for lost jobs is a paid plan, not application-level
+  compensation; a sweeper also introduces a concurrency question it would then
+  have to answer (two sweepers, or a sweeper racing a live worker). Phase 2 makes
+  stranded work visible. Re-driving it stays manual.
+
+- **The CLI's `ingest` stays synchronous. It is not wrapped and not replaced.**
+  It is the fallback for when the queue is the broken thing: if every path
+  enqueues, a dead worker or a wrong `REDIS_URL` means there is no way to get a
+  document into the database at all, and no known-good path to compare against
+  while debugging. `verify` and `embed` are already direct-call for the same
+  reason. What ROADMAP means by "the same service" is service reuse, not
+  entrypoint reuse — `ingest_document` was written in Phase 1 with a
+  caller-owned transaction precisely so both callers work.
+
+  **One orchestrating service, `process_document`, owns the `processing_runs`
+  lifecycle**, and both the CLI and the worker task call it. Otherwise a CLI
+  ingest leaves no history while an uploaded one does, and the table tells two
+  different stories about what happened. The worker task body stays a handful of
+  lines, per `ARCHITECTURE.md`.
+
+- **`documents.status` needs no migration.** `pending` already means "uploaded,
+  nothing started", `processing` means a worker has it, `ready`/`failed` are
+  terminal. The existing CHECK constraint covers all four. `documents.status` is
+  *current state*; `processing_runs.status` is *history*, and they deliberately
+  do not share a vocabulary: `queued`, `running`, `succeeded`, `failed`.
+
+- **One `processing_runs` row per attempt, with `attempts` as the attempt number
+  (1-based).** Attempt 3 is the third row, carrying `attempts = 3`. The
+  alternative — one row per job with a counter — overwrites the first error with
+  the second, which discards exactly the information worth having: a document
+  that failed transiently twice and then succeeded should be able to tell that
+  story. This resolves the ambiguity in `ARCHITECTURE.md`'s description, which
+  says "one row per ingestion attempt" while also listing an `attempts` column.
+
+- **Not every failure is retried, and the split is by exception type.**
+  `ServiceError` — our own, meaning no text layer, no such course, chunks present
+  without `--force` — is **permanent**: it fails identically on all three
+  attempts, so retrying burns time *and* produces three failed rows that make a
+  deterministic problem look like flakiness. Anything else (network, OpenAI 5xx
+  or 429, a dropped connection) is **transient** and retries with `max_tries = 3`
+  under arq's backoff.
+
+- **The permanent/transient split is enforced at the point the library raises,
+  not at the point the decision is read.** A malformed PDF surfaces as
+  `pdfminer`'s `PdfminerException`, which is not a `ServiceError` and would
+  therefore have been classified *transient* and retried three times — the exact
+  outcome the rule above exists to prevent. `extract_pages` translates it into a
+  `ServiceError` instead. The general rule this instance illustrates: any
+  library exception that is deterministic for a given input has to be translated
+  where it is raised, because the retry classifier upstream has no way to tell it
+  apart from a dropped socket. The translation also produces the readable message
+  the phase's done-when bar asks for, rather than a traceback.
+
+- **Retry is safe because Phase 1's design is already idempotent**, and this is
+  load-bearing rather than incidental: at-least-once delivery means the task body
+  *will* sometimes run twice on the same document. `ingest_document` with
+  `force=True` deletes and rebuilds chunks in one transaction, and
+  `embed_document`'s work list is "chunks where `embedding IS NULL`", so attempt
+  2 re-embeds only what attempt 1 did not and nothing is billed twice. That
+  resumability was built for a different reason and pays off here.
+
+- **A precondition failure records no run.** Unknown course, a path outside the
+  repo, existing chunks without `--force` — these are complaints about the
+  *request*, not processing attempts, and they raise before any run row is
+  opened. Otherwise the history fills with rows that never represented work, and
+  "how many times has this failed" stops meaning anything. This is why
+  `resolve_document` is split out of `ingest_document`: the run boundary sits
+  between them, and the document row has to exist before the failure-prone part
+  starts, or a PDF that cannot be parsed leaves no history at all.
+
+- **Progress is reported through `logging`, not `print`.** The CLI and the worker
+  need the same lines, and a background job writing to stdout is reporting into a
+  void. The CLI raises the level for the `app` logger alone rather than the root
+  logger — httpx logs every request at INFO, which would put a line of URL noise
+  between each pair of lines worth reading.
+
+- **A document is never left at `processing` with no live run.** On failure it
+  moves to `failed` in its own transaction with the error recorded on the run
+  row, and `ready` is set only when a count confirms no chunk is missing a
+  vector — never inferred from the task returning. Same rule as Phase 1's
+  embedding step, for the same reason.
+
+- **Crash recovery and crash detection are separate mechanisms, on purpose.**
+  Recovery is arq's: it holds an in-progress key while a job runs, and a
+  hard-killed worker's job becomes re-runnable once that key expires, bounded by
+  `max_tries`. Detection is ours, because arq's mechanism lives in the same Redis
+  that may vanish. `GET /documents/{id}/status` derives a `stale` flag when the
+  latest run is `running` and `started_at` is older than a threshold — computed
+  on read, so it costs nothing until someone looks, and the polling UI is the
+  thing that looks. The threshold is **measured in slice 2 against a real job,
+  not guessed**, and recorded here with the measurement beside it.
+
+- **Supabase Storage lands in this phase**, as a slice before the worker. The
+  forcing argument is not tidiness: `POST /documents` receives bytes, the worker
+  is a separate process with its own filesystem (a separate Render service), and
+  the free tier has no shared persistent disk — so a `storage_path` pointing at
+  local disk means the deployed upload path works on no machine but the
+  developer's. That breaks this roadmap's own rule that every phase ships and
+  `main` is always deployable. Deferring it also means building the upload UI
+  twice, and the second version gets less testing than the first. Phase 1 already
+  anticipated this: `storage_path` becomes a storage key here, and `verify`
+  changes from reading disk to downloading.
+
+**Build order**
+
+Three slices, ordered so that each one's failure mode is distinguishable from the
+previous one's. Building the worker and the endpoint together and finding a
+document stuck tells you nothing about whether the lifecycle logic or the queue
+wiring is at fault.
+
+1. **`processing_runs` + `process_document`, driven from the CLI.** No arq, no
+   HTTP. The failure semantics get boring before anything asynchronous touches
+   them.
+2. **Supabase Storage.** `storage_path` becomes a key; `verify` downloads.
+3. **arq worker + `POST /documents` + `GET /documents/{id}/status`.**
+   Demonstrable with curl and no frontend, which is where the concurrent-upload
+   and killed-worker criteria get tested.
+4. **`features/upload/`** — drag-drop plus polling progress.
+
+Slice 1 is also where `tests/` gets database fixtures, so Phase 1's outstanding
+re-ingest test lands with it — that is the amortisation condition Phase 1 set for
+it, rather than paying the fixture cost for a single test.
 
 **Done when**
 - Uploading through the UI produces a document that reaches `ready` without any
@@ -453,12 +592,22 @@ without them uploading anything first.
   avoid IPv6-only direct connections and psycopg's auto-prepare, neither of which
   is a scaling argument.
 
-- **Render's free Key Value plan has no persistence — settle this before Phase 3
-  puts arq on it.** A restart or eviction drops everything in it. For Phase 0 that
-  is irrelevant, because the only thing touching Redis is a health ping with no
-  state to lose. Once arq holds a job queue there, a restart mid-document silently
-  loses enqueued work, and the honest fix is a paid plan rather than
-  application-level retry logic. Whatever instance ends up serving arq, it has to
+- **Render's free Key Value plan has no persistence — settled for Phase 2, still
+  open for production.** A restart or eviction drops everything in it. For Phase 0
+  that is irrelevant, because the only thing touching Redis is a health ping with
+  no state to lose. Once arq holds a job queue there, a restart mid-document
+  silently loses enqueued work, and the honest fix is a paid plan rather than
+  application-level retry logic.
+
+  **Phase 2 works around it rather than solving it**, by making Postgres the
+  record of intent and Redis only the dispatch mechanism — see Phase 2's
+  constraints. That makes lost work *visible* as a run row stuck at `queued`; it
+  does not make it *not lost*. The paid plan is still the fix, and the trigger is
+  the first time this runs unattended for anything that matters.
+
+  *(This item previously read "before Phase 3 puts arq on it". The queue is
+  Phase 2 — the reference was one phase stale, which is how a deferred item
+  quietly gets skipped past its own deadline.)* Whatever instance ends up serving arq, it has to
   sit in the web service's region — see Phase 0's constraints for why, and for
   what the failure looks like when it doesn't.
 
