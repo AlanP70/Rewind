@@ -110,14 +110,101 @@ source positions preserved.
 - Chunking strategy that records `page_number`, `chunk_index`, `char_start`,
   `char_end` for every chunk.
 - Embedding generation, batched, into `chunks.embedding vector(1536)`.
-- A CLI command: `ingest <course_id> <path>`.
+- A CLI, `python -m app.cli`, with `create-course`, `ingest <course_id> <path>`,
+  and `verify <document_id>`.
 
 **No UI. No queue.** Ingestion runs synchronously in the CLI.
+
+**Constraints settled before writing any of it**
+
+- **The PDF library is `pdfplumber`. Not pypdf, not PyMuPDF.** Two reasons, both
+  load-bearing. It is MIT licensed, and PyMuPDF is AGPL — ruled out for a repo
+  that may go public. And its char objects come out of the *same layout pass* as
+  the text, so if Phase 4's highlighting ever needs bounding boxes, the
+  coordinate data is already reachable without swapping libraries and re-ingesting
+  everything. A different library's offsets are a different coordinate system;
+  per invariant 3 the offsets cannot be backfilled, so changing this later means
+  reprocessing every PDF. The cost is speed, and it lands in a CLI where nobody
+  is waiting.
+
+  **`pdfplumber` is pinned with `==`, and bumping it requires a full re-ingest.**
+  Same argument as the Postgres and pgvector pins in Phase 0, with higher stakes:
+  a version bump that changes extracted text by one character does not error, it
+  silently shifts every stored offset, and invariant 3 says those cannot be
+  backfilled. The failure surfaces much later as highlights landing on the wrong
+  passage. `verify` is what catches it — run it after any bump.
+- **Embeddings are OpenAI `text-embedding-3-small` at 1536 dimensions**, matching
+  `chunks.embedding vector(1536)`. The dimension is a commitment: changing the
+  model means a migration plus a full re-embed. The API key is needed for the
+  embed step and nothing before it.
+- **Chunks never span pages.** `char_start`/`char_end` are **page-local** indices
+  into that one page's extracted text — not offsets into the whole document.
+  Every consumer of those columns depends on this reading.
+- **The chunker is a pure function from a page string to `(start, end)` index
+  pairs. It never returns text.** Content is produced exactly once, by slicing
+  that same string with those pairs, so `text[start:end] == content` holds *by
+  construction* rather than by agreement between two code paths. This is the
+  structural reason the invariant holds; the three verification layers below are
+  what prove it did.
+- **Chunk size 1000 characters, 150 overlap, split on a ladder of separators:
+  blank line, then sentence end, then line break, then space, then a hard cut.**
+
+  **A bare line break has to be one of the tiers.** Measured against the 6.006
+  DFS lecture: it contains *zero* blank lines and between zero and five
+  sentence-ending periods per page, because slide-style lecture notes are bullet
+  lines joined by single newlines. Paragraph-then-sentence alone finds no
+  boundary anywhere on that document and falls straight through to cutting
+  mid-word.
+
+  **Sentence ranks above line break, and the order matters both ways.** In
+  hard-wrapped prose a line break lands mid-sentence and is the worse split; in
+  slide notes the sentence tier finds nothing and the line tier takes over. This
+  order is the one that behaves for both kinds of document.
+
+  **A boundary is only accepted once the chunk is 70% full** (`MIN_FILL`). At
+  50%, one stray period early in the window wins the sentence tier and emits a
+  236-character chunk beside 1000-character ones; 0.7 removes the runt and takes
+  the document from 10 chunks to 9; 0.75 and above produce a different runt.
+  Re-measure if the target size changes.
+
+  **All of the above was tuned against exactly one document** — the 6.006 DFS
+  lecture, a slide-style PDF. It is not validated across document types. An
+  assignment sheet or a prose-heavy syllabus has different structure and may want
+  different numbers, and the sentence-above-line-break ordering in particular has
+  only been exercised on material with almost no sentences in it. Revisit this
+  deliberately when the second and third document kinds arrive, rather than
+  meeting it later as a mystery about why some documents chunk badly.
+- **Courses are created by a `create-course` subcommand**, not seeded in a
+  migration. `starts_on`/`ends_on` are real data that Phase 3 infers dates
+  against, not fixture data.
+- **Re-ingesting the same `storage_path` is idempotent**: the same document row,
+  with its chunks deleted and rebuilt in one transaction. `--force` is what
+  permits the destructive re-chunk; without it the run refuses rather than
+  quietly doubling a document's chunks.
+- **The CLI is stdlib `argparse`.** Three subcommands do not justify a dependency.
+
+**Offset verification has three layers, not one**
+
+The offsets are the one thing in this phase that cannot be repaired after the
+fact, so they are checked at three levels that fail for different reasons:
+
+1. **A property test on the pure chunker**, against synthetic strings. No PDF, no
+   database. Catches chunker logic bugs in isolation.
+2. **`ingest --dry-run`** against the real PDF, asserting the same property and
+   writing nothing. Catches whatever real extracted text does that synthetic
+   strings don't.
+3. **The `verify` command**, which **re-extracts the PDF in a separate process**
+   from `storage_path` — reusing nothing cached in memory — and asserts
+   `page_text[char_start:char_end] == content` byte for byte. Running it in a
+   fresh process is the whole point: it catches round-trip corruption through
+   Postgres *and* non-deterministic extraction, neither of which an in-memory
+   check can structurally detect.
 
 **Done when**
 - A real lecture PDF ingests end to end.
 - For a random sample of chunks, `char_start`/`char_end` slice the source page
-  text back to exactly the stored `content`. This is verified, not assumed.
+  text back to exactly the stored `content`. This is verified, not assumed — by
+  all three layers above, `verify` included.
 - No chunk has a null `page_number`, `char_start`, or `char_end`.
 - Re-ingesting the same document does not create duplicates.
 

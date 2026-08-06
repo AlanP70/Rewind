@@ -16,8 +16,21 @@ dependencies = [
     "pydantic-settings>=2.6",
     # Supplies the SQLAlchemy Vector column type that maps to pgvector.
     "pgvector>=0.3",
+    # Exact pins, not floors. A bump changes extracted text without erroring,
+    # which silently shifts every stored char offset — and per invariant 3 those
+    # cannot be backfilled. Both are pinned because pdfminer.six is what actually
+    # produces the text; pdfplumber only wraps it. Bump by hand, then re-ingest
+    # and run `verify`.
+    "pdfplumber==0.11.10",
+    "pdfminer-six==20260107",
 ]
 
 [tool.uv]
 # This is an application, not a library — nothing imports it, so it is not built.
 package = false
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.165.2",
+    "pytest>=9.1.1",
+]
