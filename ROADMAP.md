@@ -238,6 +238,30 @@ something knowingly broken now.
 - No chunk has a null `page_number`, `char_start`, or `char_end`.
 - Re-ingesting the same document does not create duplicates.
 
+**Status — complete except the embedding slice** (as of 2026-08-05)
+
+Done, verified by running against the 6.006 DFS lecture:
+
+- `users`, `courses`, `documents`, `chunks` migrated; `alembic downgrade base`
+  then `upgrade head` confirmed clean from empty.
+- Extraction, chunking, `create-course`, `ingest`, `ingest --dry-run`, `verify`.
+- All three verification layers pass. `verify` was proved able to *fail*, not
+  just to pass, by injecting three faults into the database — a changed character
+  in `content`, a `char_start` shifted by one, and a wrong `page_count` — and
+  confirming each is caught and reported with the offset of the first divergence.
+- Re-ingest refuses without `--force` and replaces rather than duplicates with it:
+  three ingests of the same file leave one document and nine chunks.
+
+**Outstanding: batched embeddings into `chunks.embedding`.** Needs an
+`OPENAI_API_KEY`, which is deliberately not yet configured. Until that slice
+lands there is no `openai` dependency, no key in `config.py` or `.env.example`,
+and every chunk's `embedding` is null.
+
+**Ingested documents therefore stop at status `processing`, by design.** A
+document with no vectors cannot be searched, so marking it `ready` would make
+Phase 4 look broken rather than incomplete. The embedding slice is what advances
+it to `ready`; nothing else should.
+
 ---
 
 ## Phase 2 — Job queue
