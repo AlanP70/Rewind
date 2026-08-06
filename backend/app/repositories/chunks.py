@@ -18,6 +18,30 @@ async def list_for_document(session: AsyncSession, document_id: uuid.UUID) -> li
     return list(result.scalars().all())
 
 
+async def list_unembedded(session: AsyncSession, document_id: uuid.UUID) -> list[Chunk]:
+    """Chunks still missing a vector, in reading order.
+
+    This is the work list for embedding, and the reason a failed run resumes
+    instead of restarting: whatever was already committed is no longer selected,
+    so no chunk is ever paid for twice.
+    """
+    result = await session.execute(
+        select(Chunk)
+        .where(Chunk.document_id == document_id, Chunk.embedding.is_(None))
+        .order_by(Chunk.chunk_index)
+    )
+    return list(result.scalars().all())
+
+
+async def count_unembedded(session: AsyncSession, document_id: uuid.UUID) -> int:
+    result = await session.execute(
+        select(func.count())
+        .select_from(Chunk)
+        .where(Chunk.document_id == document_id, Chunk.embedding.is_(None))
+    )
+    return result.scalar_one()
+
+
 async def count_for_document(session: AsyncSession, document_id: uuid.UUID) -> int:
     result = await session.execute(
         select(func.count()).select_from(Chunk).where(Chunk.document_id == document_id)

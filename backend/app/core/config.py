@@ -16,6 +16,11 @@ class Settings(BaseSettings):
 
     redis_url: str
 
+    # Optional so the app, the health routes and `ingest --dry-run` all run
+    # without a key. Only the embedding step requires it, and it says so when it
+    # is missing rather than failing inside the OpenAI client.
+    openai_api_key: str | None = None
+
     # Comma-separated. A localhost placeholder holds until the first Vercel deploy
     # supplies the real origin.
     cors_origins: str = "http://localhost:3000"

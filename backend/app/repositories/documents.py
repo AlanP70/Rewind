@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document
@@ -15,6 +15,17 @@ async def get(
         select(Document).where(Document.id == document_id, Document.user_id == user_id)
     )
     return result.scalar_one_or_none()
+
+
+async def set_status(session: AsyncSession, document_id: uuid.UUID, status: str) -> None:
+    """Set status by statement rather than by mutating an ORM object.
+
+    The failure path runs this straight after a rollback, which expires everything
+    in the session; an UPDATE does not care whether the identity map survived.
+    """
+    await session.execute(
+        update(Document).where(Document.id == document_id).values(status=status)
+    )
 
 
 async def get_by_storage_path(

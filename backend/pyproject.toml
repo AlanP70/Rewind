@@ -23,6 +23,7 @@ dependencies = [
     # and run `verify`.
     "pdfplumber==0.11.10",
     "pdfminer-six==20260107",
+    "openai>=2.53.0",
 ]
 
 [tool.uv]

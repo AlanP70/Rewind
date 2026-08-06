@@ -137,6 +137,23 @@ source positions preserved.
   `chunks.embedding vector(1536)`. The dimension is a commitment: changing the
   model means a migration plus a full re-embed. The API key is needed for the
   embed step and nothing before it.
+
+  **The key is scoped to `/v1/embeddings` only.** Phase 5's concept extraction
+  needs chat completions, and it will fail with a *permissions* error — not a
+  quota or billing error, which is what one would go looking for first. Widen the
+  key or issue a second one before starting that phase.
+
+- **Embedding commits per batch, and a failed run resumes rather than restarts.**
+  The work list is "chunks where `embedding IS NULL`", so nothing is ever billed
+  twice. One transaction across all batches was rejected deliberately: a transient
+  failure on the last batch of a semester would discard every vector already paid
+  for, and there is nothing atomic to protect, because a chunk's embedding depends
+  on that chunk alone.
+
+  **A half-filled embedding column is never left under a `processing` status.** On
+  failure the document is moved to `failed` in its own transaction and the CLI
+  prints the resume command. `ready` is set only when a count confirms no chunk is
+  missing a vector — never inferred from the loop finishing.
 - **Chunks never span pages.** `char_start`/`char_end` are **page-local** indices
   into that one page's extracted text — not offsets into the whole document.
   Every consumer of those columns depends on this reading.
@@ -238,29 +255,29 @@ something knowingly broken now.
 - No chunk has a null `page_number`, `char_start`, or `char_end`.
 - Re-ingesting the same document does not create duplicates.
 
-**Status — complete except the embedding slice** (as of 2026-08-05)
+**Status — complete** (as of 2026-08-05)
 
-Done, verified by running against the 6.006 DFS lecture:
+Verified by running against the 6.006 DFS lecture, end to end:
 
 - `users`, `courses`, `documents`, `chunks` migrated; `alembic downgrade base`
   then `upgrade head` confirmed clean from empty.
-- Extraction, chunking, `create-course`, `ingest`, `ingest --dry-run`, `verify`.
+- CLI: `create-course`, `ingest` (with `--dry-run`, `--force`, `--no-embed`),
+  `embed`, `verify`.
 - All three verification layers pass. `verify` was proved able to *fail*, not
   just to pass, by injecting three faults into the database — a changed character
   in `content`, a `char_start` shifted by one, and a wrong `page_count` — and
   confirming each is caught and reported with the offset of the first divergence.
 - Re-ingest refuses without `--force` and replaces rather than duplicates with it:
   three ingests of the same file leave one document and nine chunks.
-
-**Outstanding: batched embeddings into `chunks.embedding`.** Needs an
-`OPENAI_API_KEY`, which is deliberately not yet configured. Until that slice
-lands there is no `openai` dependency, no key in `config.py` or `.env.example`,
-and every chunk's `embedding` is null.
-
-**Ingested documents therefore stop at status `processing`, by design.** A
-document with no vectors cannot be searched, so marking it `ready` would make
-Phase 4 look broken rather than incomplete. The embedding slice is what advances
-it to `ready`; nothing else should.
+- Embedding: 9 chunks at 1536 dimensions, unit norm, 9 distinct vectors, document
+  at `ready`. **Partial failure was tested by injection, not assumed**: failing
+  batch 2 of 3 left the 4 chunks from batch 1 committed, moved the document to
+  `failed`, and printed the resume command; re-running embedded exactly the 5
+  outstanding chunks and reached `ready`.
+- Cost visibility: the chunk count, an estimated token count and an estimated
+  dollar figure print before any request is made. The token estimate is
+  characters ÷ 4, a deliberate approximation rather than a `tiktoken` dependency,
+  and is labelled an estimate wherever it appears.
 
 ---
 

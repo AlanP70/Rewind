@@ -16,6 +16,7 @@ from pathlib import Path
 from app.core.db import async_session
 from app.models.user import SEED_USER_ID
 from app.schemas.ingestion import PlannedChunk
+from app.services.embedding import embed_document, estimate, pending_chunks
 from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
 from app.services.ingestion import create_course, ingest_document, plan_chunks
@@ -109,10 +110,45 @@ async def _ingest(args: argparse.Namespace) -> int:
     replaced = f" (replaced {result.replaced_chunks})" if result.replaced_chunks else ""
     print(f"{verb} document {result.document_id}")
     print(f"  pages: {result.page_count}")
-    print(f"  chunks: {result.chunk_count}{replaced}")
-    # Plain hyphen, not an em dash: the Windows console is cp1252 and mangles it.
-    print("  status: processing - embeddings not generated yet")
-    return 0
+    print(f"  chunks: {result.chunk_count}{replaced}", flush=True)
+
+    if args.no_embed:
+        print("  status: processing - embeddings skipped")
+        return 0
+
+    # A separate session from the chunk transaction above, which has committed.
+    # Embedding commits per batch and must not be able to roll that back.
+    async with async_session() as session:
+        return await _run_embedding(session, result.document_id)
+
+
+async def _run_embedding(session, document_id: uuid.UUID) -> int:
+    """Show the cost, then spend it. Shared by `ingest` and `embed`."""
+    pending = await pending_chunks(session, document_id)
+    if not pending:
+        print("  embeddings: already complete, nothing to spend")
+    else:
+        cost = estimate(pending)
+        # Two decimal places would print a real cost of $0.000033 as $0.00, which
+        # is exactly the number this line exists to show. Small runs get the
+        # precision they need; a semester-sized one reads normally.
+        dollars = f"${cost.estimated_usd:.2f}" if cost.estimated_usd >= 0.01 else f"${cost.estimated_usd:.6f}"
+        print(
+            f"  embedding {cost.chunk_count} chunk(s), "
+            f"~{cost.estimated_tokens} tokens, ~{dollars} (estimate)",
+            flush=True,
+        )
+
+    result = await embed_document(session, user_id=SEED_USER_ID, document_id=document_id)
+    print(f"  embedded: {result.embedded}, remaining: {result.remaining}")
+    print(f"  status: {result.status}")
+    return 0 if result.remaining == 0 else 1
+
+
+async def _embed(args: argparse.Namespace) -> int:
+    async with async_session() as session:
+        print(f"document {args.document_id}")
+        return await _run_embedding(session, args.document_id)
 
 
 async def _verify(args: argparse.Namespace) -> int:
@@ -173,7 +209,18 @@ def main() -> int:
         action="store_true",
         help="extract, chunk and check offsets without writing anything",
     )
+    ingest.add_argument(
+        "--no-embed",
+        action="store_true",
+        help="store chunks but skip the embedding step, which is what costs money",
+    )
     ingest.set_defaults(handler=_ingest)
+
+    embed = subcommands.add_parser(
+        "embed", help="embed a document's chunks; resumes a run that failed partway"
+    )
+    embed.add_argument("document_id", type=uuid.UUID)
+    embed.set_defaults(handler=_embed)
 
     verify = subcommands.add_parser(
         "verify", help="re-extract a document's PDF and check every chunk's offsets"
