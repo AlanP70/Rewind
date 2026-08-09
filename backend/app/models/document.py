@@ -52,9 +52,9 @@ class Document(Base, CreatedAt):
         # Makes (id, user_id) a referenceable key so `chunks` can pin ownership
         # with a composite FK. Redundant on its own -- id is already unique.
         UniqueConstraint("id", "user_id", name="uq_documents_id_user_id"),
-        # Document identity for re-ingestion: the same file path ingested twice
-        # is the same document, not a second one.
-        UniqueConstraint("user_id", "storage_path", name="uq_documents_user_id_storage_path"),
+        # Document identity for re-ingestion: the same file ingested twice is the
+        # same document, not a second one.
+        UniqueConstraint("user_id", "storage_key", name="uq_documents_user_id_storage_key"),
         CheckConstraint(
             "kind IN ('lecture', 'assignment', 'note', 'syllabus')",
             name="ck_documents_kind",
@@ -87,9 +87,11 @@ class Document(Base, CreatedAt):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
 
-    # A local filesystem path in Phase 1. Supabase Storage lands later; the column
-    # is the same either way.
-    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    # `{user_id}/{filename}`, addressed through `app/core/storage.py` -- not a
+    # filesystem path, which is why 0004 renamed it. Keyed on the filename rather
+    # than a content hash so a re-exported lecture is a re-ingest of this row
+    # instead of a second document orphaning it.
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Invariant 1, second half: when the learning actually happened, as opposed to
     # when we inserted the row. Both nullable until Phase 3 does dating -- Phase 1

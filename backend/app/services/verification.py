@@ -7,18 +7,24 @@ proves the chunker is internally consistent, layer (b) proves it holds for a rea
 PDF at the moment of ingestion. Neither can see what Postgres actually kept, and
 neither re-reads the file.
 
-This does both: it re-extracts the PDF from `storage_path` in a separate process
-and compares against what came back out of the database. That is what makes it
-able to catch a text round-trip that lost or changed a character, and extraction
-that is not reproducible across runs or across a library upgrade.
+This does both: it re-downloads the PDF from storage, re-extracts it in a
+separate process, and compares against what came back out of the database. That
+is what makes it able to catch a text round-trip that lost or changed a
+character, and extraction that is not reproducible across runs or across a
+library upgrade.
+
+Downloading rather than reading the file the caller happens to have is the same
+argument as the separate process, one level out: the bytes in the bucket are what
+the worker will chunk, so those are the bytes worth checking.
 """
 
 import uuid
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.paths import resolve_storage_path
+from app.core.storage import get_storage
 from app.repositories import chunks as chunks_repo
 from app.repositories import documents as documents_repo
 from app.services.errors import ServiceError
@@ -57,7 +63,7 @@ class ChunkFailure:
 @dataclass(frozen=True)
 class VerificationReport:
     document_id: uuid.UUID
-    storage_path: str
+    storage_key: str
     chunk_count: int
     pages_stored: int | None
     pages_extracted: int
@@ -80,15 +86,17 @@ async def verify_document(
     if document is None:
         raise ServiceError(f"no document {document_id} for this user")
 
-    path = resolve_storage_path(document.storage_path)
-    if not path.is_file():
-        raise ServiceError(f"{document.storage_path} is recorded but missing from disk")
-
     stored = await chunks_repo.list_for_document(session, document_id)
     if not stored:
         raise ServiceError(f"document {document_id} has no chunks to verify")
 
-    pages = extract_pages_in_subprocess(path)
+    # A key recorded in `documents` with no object behind it raises from here --
+    # `download` reports the missing key itself, so there is no `exists` check to
+    # race against.
+    data = await get_storage().download(document.storage_key)
+    pages = extract_pages_in_subprocess(
+        data, name=PurePosixPath(document.storage_key).name
+    )
 
     failures = []
     for chunk in stored:
@@ -122,7 +130,7 @@ async def verify_document(
 
     return VerificationReport(
         document_id=document_id,
-        storage_path=document.storage_path,
+        storage_key=document.storage_key,
         chunk_count=len(stored),
         pages_stored=document.page_count,
         pages_extracted=len(pages),

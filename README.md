@@ -131,6 +131,33 @@ column in DDL, and the `<->` operator. **No schema-qualifying and no
 `SET search_path` is needed anywhere**, so from Phase 1 onward the models can
 name `vector` bare. If that ever changes, it changes here first.
 
+### Document storage
+
+Uploaded PDFs live behind `app/core/storage.py`, and `documents.storage_key`
+addresses them as `{user_id}/{filename}` — a key, not a filesystem path. There
+are two real backends, selected by `STORAGE_BACKEND`:
+
+| | |
+|---|---|
+| `local` (default) | files under `backend/.storage`, gitignored |
+| `supabase` | a private Supabase Storage bucket, over its REST API |
+
+**`local` is the default so this repo runs on a fresh clone with no credentials
+at all** — including `ingest` and `verify`, which is the bar Phase 0 set. Nothing
+about local development needs the Supabase values.
+
+`supabase` is what the deploy uses, and it is not optional there: the upload
+endpoint and the worker are separate Render services with no shared disk, so a
+local path would work on no machine but yours. To point at it, uncomment the
+storage block in `.env.example` and supply `SUPABASE_URL`,
+`SUPABASE_SERVICE_KEY` and `STORAGE_BUCKET`.
+
+One thing that will cost you an hour otherwise: **the service key must go in the
+`apikey` header as well as `Authorization`.** A current `sb_secret_...` key is
+not a JWT — the API gateway resolves it from `apikey` — so sending only
+`Authorization` fails as `Invalid Compact JWS`, which reads like a corrupted
+secret rather than a missing header. `app/core/storage.py` sends both.
+
 ### Connection strings
 
 Two variables, `DATABASE_URL` (async, `asyncpg`, for the app) and

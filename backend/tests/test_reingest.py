@@ -17,13 +17,14 @@ from datetime import date
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.paths import REPO_ROOT
+from app.core.storage import LocalStorage, storage_key
 from app.models.user import SEED_USER_ID
 from app.repositories import chunks as chunks_repo
 from app.services.errors import ServiceError
 from app.services.ingestion import create_course, ingest_document, resolve_document
+from tests.conftest import LECTURE
 
-LECTURE = REPO_ROOT / "test-data" / "Depth-First_Search_Lecture.pdf"
+KEY = storage_key(SEED_USER_ID, LECTURE.name)
 
 
 async def _course(session: AsyncSession) -> uuid.UUID:
@@ -39,18 +40,23 @@ async def _course(session: AsyncSession) -> uuid.UUID:
 
 
 async def _ingest(session: AsyncSession, course_id: uuid.UUID, *, force: bool = False) -> int:
-    resolved = await resolve_document(
+    resolved = await _resolve(session, course_id, force=force)
+    result = await ingest_document(session, resolved=resolved, data=LECTURE.read_bytes())
+    await session.commit()
+    return result.chunk_count
+
+
+async def _resolve(session: AsyncSession, course_id: uuid.UUID, *, force: bool = True):
+    """Look the document up the way ingestion does, by its storage key."""
+    return await resolve_document(
         session,
         user_id=SEED_USER_ID,
         course_id=course_id,
-        path=LECTURE,
+        storage_key=KEY,
         kind="lecture",
         title="Depth-First Search",
         force=force,
     )
-    result = await ingest_document(session, resolved=resolved, path=LECTURE)
-    await session.commit()
-    return result.chunk_count
 
 
 async def test_reingest_without_force_refuses(session: AsyncSession) -> None:
@@ -58,7 +64,7 @@ async def test_reingest_without_force_refuses(session: AsyncSession) -> None:
     await _ingest(session, course_id)
 
     with pytest.raises(ServiceError, match="pass --force"):
-        await _ingest(session, course_id)
+        await _ingest(session, course_id, force=False)
 
 
 async def test_reingest_with_force_replaces_rather_than_duplicates(
@@ -88,17 +94,30 @@ async def test_reingest_is_the_same_document(session: AsyncSession) -> None:
     assert first == second
 
 
-async def _resolve(session: AsyncSession, course_id: uuid.UUID):
-    """Look the document up the way ingestion does, by its storage path."""
-    return await resolve_document(
+async def test_the_same_file_under_a_different_name_is_a_different_document(
+    session: AsyncSession, storage: LocalStorage
+) -> None:
+    """The accepted cost of keying on the filename rather than on content.
+
+    Pinned rather than merely documented, because the alternative -- content
+    addressing -- has the opposite and worse failure: a re-exported lecture would
+    become a second document and silently orphan the first, splitting a
+    semester's timeline for a concept in two.
+    """
+    course_id = await _course(session)
+    await _ingest(session, course_id)
+
+    renamed = await resolve_document(
         session,
         user_id=SEED_USER_ID,
         course_id=course_id,
-        path=LECTURE,
+        storage_key=storage_key(SEED_USER_ID, "DFS (copy).pdf"),
         kind="lecture",
         title="Depth-First Search",
-        force=True,
     )
+
+    assert renamed.reused is False
+    assert renamed.document.id != (await _resolve(session, course_id)).document.id
 
 
 def test_the_fixture_pdf_is_present() -> None:

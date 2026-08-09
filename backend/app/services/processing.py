@@ -12,11 +12,13 @@ can act on.
 
 The shape of an attempt:
 
-1. `resolve_document` -- preconditions. Unknown course, path outside the repo,
-   existing chunks without `force`. These are complaints about the request, not
-   processing failures, so they raise before any run exists.
+1. `resolve_document` -- preconditions. Unknown course, existing chunks without
+   `force`. These are complaints about the request, not processing failures, so
+   they raise before any run exists.
 2. Open the run at `running`, commit. From here on, every exit updates it.
-3. Chunk, then embed.
+3. Download the bytes, chunk, then embed. The download is inside the run because
+   it is failure-prone in exactly the way the run row exists to record -- a key
+   that is not in the bucket, or a bucket that cannot be reached.
 4. Success: run `succeeded`. Failure: the document goes to `failed` and the run
    records why, both committed, and the error is re-raised.
 
@@ -27,10 +29,10 @@ rule Phase 1 applied to a half-filled embedding column, for the same reason.
 import logging
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.storage import get_storage
 from app.models import DocumentStatus, RunStatus
 from app.repositories import documents as documents_repo
 from app.repositories import processing_runs as runs_repo
@@ -56,18 +58,23 @@ async def process_document(
     *,
     user_id: uuid.UUID,
     course_id: uuid.UUID,
-    path: Path,
+    storage_key: str,
     kind: str,
     title: str,
     force: bool = False,
     embed: bool = True,
 ) -> ProcessResult:
-    """Process one document, recording the attempt. See the module docstring."""
+    """Process one document, recording the attempt. See the module docstring.
+
+    Takes a storage key, never a path or bytes. The worker in slice 3 receives
+    nothing else -- it is a separate process that never saw the upload -- and the
+    CLI hands over the same thing so both entrypoints exercise one code path.
+    """
     resolved = await resolve_document(
         session,
         user_id=user_id,
         course_id=course_id,
-        path=path,
+        storage_key=storage_key,
         kind=kind,
         title=title,
         force=force,
@@ -89,9 +96,10 @@ async def process_document(
     await session.commit()
 
     try:
+        data = await get_storage().download(storage_key)
         # `resolved` survives the commits above -- the session is configured
         # `expire_on_commit=False`.
-        ingested = await ingest_document(session, resolved=resolved, path=path)
+        ingested = await ingest_document(session, resolved=resolved, data=data)
         await session.commit()
         logger.info(
             "%s document %s (attempt %d): %d pages, %d chunks%s",

@@ -1,4 +1,4 @@
-"""Ingestion: a PDF path in, rows in `documents` and `chunks` out.
+"""Ingestion: a PDF's bytes in, rows in `documents` and `chunks` out.
 
 This module owns the one place content is produced. `plan_chunks` slices each
 page string with the offsets `chunk_page` returned, so a `PlannedChunk`'s
@@ -12,11 +12,10 @@ and (from Phase 2) the arq worker call the same function.
 import uuid
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
+from pathlib import PurePosixPath
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.paths import to_storage_path
 from app.models import Course, Document, DocumentStatus
 from app.repositories import chunks as chunks_repo
 from app.repositories import courses as courses_repo
@@ -104,7 +103,7 @@ async def resolve_document(
     *,
     user_id: uuid.UUID,
     course_id: uuid.UUID,
-    path: Path,
+    storage_key: str,
     kind: str,
     title: str,
     force: bool = False,
@@ -117,12 +116,17 @@ async def resolve_document(
     leaves no processing history at all, which is the one case the history exists
     for.
 
-    Everything here is a precondition about the *request* -- unknown course, path
-    outside the repo, existing chunks without `force`. None of it is a processing
-    failure, so none of it produces a run.
+    Everything here is a precondition about the *request* -- unknown course,
+    existing chunks without `force`. None of it is a processing failure, so none
+    of it produces a run.
 
-    Re-ingesting the same path is the same document, not a second one -- that is
-    what `UNIQUE (user_id, storage_path)` encodes. A re-ingest that would destroy
+    The bytes are already in storage by the time this runs; the caller uploads.
+    That ordering is forced by slice 3, where the upload endpoint has the bytes
+    and the worker only ever gets a key -- so the key, not a path, is what
+    identifies a document here.
+
+    Re-ingesting the same key is the same document, not a second one -- that is
+    what `UNIQUE (user_id, storage_key)` encodes. A re-ingest that would destroy
     existing chunks refuses unless `force` is set, because silently rebuilding is
     indistinguishable from silently doubling when it goes wrong.
 
@@ -133,15 +137,7 @@ async def resolve_document(
     if course is None:
         raise ServiceError(f"no course {course_id} for this user")
 
-    # Canonical and repo-relative, so the same file reached by two different
-    # relative paths is one document, and the row still means something on a
-    # machine that is not this one.
-    try:
-        storage_path = to_storage_path(path)
-    except ValueError as error:
-        raise ServiceError(str(error)) from error
-
-    document = await documents_repo.get_by_storage_path(session, user_id, storage_path)
+    document = await documents_repo.get_by_storage_key(session, user_id, storage_key)
 
     if document is None:
         document = await documents_repo.create(
@@ -150,28 +146,32 @@ async def resolve_document(
             course_id=course_id,
             kind=kind,
             title=title,
-            storage_path=storage_path,
+            storage_key=storage_key,
         )
         return ResolvedDocument(document=document, reused=False, existing_chunks=0)
 
     if document.course_id != course_id:
         raise ServiceError(
-            f"{storage_path} is already ingested under course {document.course_id}"
+            f"{storage_key} is already ingested under course {document.course_id}"
         )
 
     existing = await chunks_repo.count_for_document(session, document.id)
     if existing and not force:
         raise ServiceError(
-            f"{storage_path} already has {existing} chunks; pass --force to replace them"
+            f"{storage_key} already has {existing} chunks; pass --force to replace them"
         )
 
     return ResolvedDocument(document=document, reused=True, existing_chunks=existing)
 
 
 async def ingest_document(
-    session: AsyncSession, *, resolved: ResolvedDocument, path: Path
+    session: AsyncSession, *, resolved: ResolvedDocument, data: bytes
 ) -> IngestResult:
     """Extract, chunk and store one PDF into an already-resolved document.
+
+    Takes the bytes the caller downloaded rather than fetching them itself, so
+    the download happens once per attempt and this function stays a pure
+    transformation of bytes into rows.
 
     Always replaces: the `--force` guard was answered in `resolve_document`, so by
     the time execution is here, rebuilding is what was asked for. That is also
@@ -181,10 +181,14 @@ async def ingest_document(
     document = resolved.document
     replaced = await chunks_repo.delete_for_document(session, document.id)
 
-    pages = extract_pages(path)
+    # The key's filename alone. The `{user_id}/` prefix is noise in an error
+    # message a person has to read.
+    name = PurePosixPath(document.storage_key).name
+
+    pages = extract_pages(data, name=name)
     planned = plan_chunks(pages)
     if not planned:
-        raise ServiceError(f"{path} yielded no text; is it a scan with no text layer?")
+        raise ServiceError(f"{name} yielded no text; is it a scan with no text layer?")
 
     await chunks_repo.insert_many(
         session, user_id=document.user_id, document_id=document.id, planned=planned

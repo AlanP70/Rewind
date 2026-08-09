@@ -24,6 +24,10 @@ dependencies = [
     "pdfplumber==0.11.10",
     "pdfminer-six==20260107",
     "openai>=2.53.0",
+    # Supabase Storage is two REST endpoints, which does not justify the
+    # `supabase` client. httpx is already in the tree under openai; it is
+    # declared here because this code calls it directly.
+    "httpx>=0.28",
 ]
 
 [tool.uv]

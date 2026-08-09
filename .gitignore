@@ -9,6 +9,9 @@ __pycache__/
 *.py[cod]
 .venv/
 
+# Local storage backend — uploaded document bytes, not project source.
+backend/.storage/
+
 # Node
 node_modules/
 .next/

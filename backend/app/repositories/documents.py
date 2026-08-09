@@ -28,18 +28,18 @@ async def set_status(session: AsyncSession, document_id: uuid.UUID, status: str)
     )
 
 
-async def get_by_storage_path(
-    session: AsyncSession, user_id: uuid.UUID, storage_path: str
+async def get_by_storage_key(
+    session: AsyncSession, user_id: uuid.UUID, storage_key: str
 ) -> Document | None:
     """Look a document up by the identity re-ingestion uses.
 
-    `UNIQUE (user_id, storage_path)` is what makes the same file ingested twice
+    `UNIQUE (user_id, storage_key)` is what makes the same file ingested twice
     the same document rather than a second one, so this is the query that decides
     whether a run is a first ingest or a re-ingest.
     """
     result = await session.execute(
         select(Document).where(
-            Document.user_id == user_id, Document.storage_path == storage_path
+            Document.user_id == user_id, Document.storage_key == storage_key
         )
     )
     return result.scalar_one_or_none()
@@ -52,14 +52,14 @@ async def create(
     course_id: uuid.UUID,
     kind: str,
     title: str,
-    storage_path: str,
+    storage_key: str,
 ) -> Document:
     document = Document(
         user_id=user_id,
         course_id=course_id,
         kind=kind,
         title=title,
-        storage_path=storage_path,
+        storage_key=storage_key,
     )
     session.add(document)
     await session.flush()

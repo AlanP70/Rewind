@@ -1,4 +1,4 @@
-"""Database fixtures.
+"""Database and storage fixtures.
 
 Tests run against a real Postgres -- a separate `rewind_test` database, rebuilt
 from the migrations at the start of a session and truncated between tests. Not
@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -23,7 +24,14 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
-from app.core.paths import BACKEND_DIR
+from app.core.paths import BACKEND_DIR, REPO_ROOT
+from app.core.storage import LocalStorage
+
+LECTURE = REPO_ROOT / "test-data" / "Depth-First_Search_Lecture.pdf"
+
+# Enough of a PDF to be offered to pdfplumber and refused by it. Bytes rather
+# than a file: nothing on the ingestion path reads disk any more.
+CORRUPT_PDF = b"%PDF-1.4\nnot actually a pdf\n"
 
 TEST_DATABASE_NAME = "rewind_test"
 
@@ -42,6 +50,24 @@ def _test_url(url_string: str) -> str:
     return make_url(url_string).set(database=TEST_DATABASE_NAME).render_as_string(
         hide_password=False
     )
+
+
+@pytest.fixture(autouse=True)
+def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStorage:
+    """An empty local storage root per test, and a hard guarantee of isolation.
+
+    Autouse, not opt-in. Without it a test would use whatever `STORAGE_BACKEND`
+    the developer's `.env` names -- which for anyone holding real credentials
+    means the suite uploads into the production bucket. A test suite that can
+    reach production storage will eventually write to it.
+
+    `get_storage()` reads these settings on every call, so patching them here is
+    enough to redirect the services under test without passing a backend through
+    every signature.
+    """
+    monkeypatch.setattr(settings, "storage_backend", "local")
+    monkeypatch.setattr(settings, "storage_local_root", str(tmp_path / "storage"))
+    return LocalStorage(settings.storage_root)
 
 
 @pytest.fixture(scope="session")

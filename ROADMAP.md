@@ -194,7 +194,7 @@ source positions preserved.
 - **Courses are created by a `create-course` subcommand**, not seeded in a
   migration. `starts_on`/`ends_on` are real data that Phase 3 infers dates
   against, not fixture data.
-- **Re-ingesting the same `storage_path` is idempotent**: the same document row,
+- **Re-ingesting the same `storage_key` is idempotent**: the same document row,
   with its chunks deleted and rebuilt in one transaction. `--force` is what
   permits the destructive re-chunk; without it the run refuses rather than
   quietly doubling a document's chunks.
@@ -211,28 +211,27 @@ fact, so they are checked at three levels that fail for different reasons:
    writing nothing. Catches whatever real extracted text does that synthetic
    strings don't.
 3. **The `verify` command**, which **re-extracts the PDF in a separate process**
-   from `storage_path` — reusing nothing cached in memory — and asserts
+   from the bytes `storage_key` addresses — reusing nothing cached in memory,
+   and since slice 2 nothing on local disk either — and asserts
    `page_text[char_start:char_end] == content` byte for byte. Running it in a
    fresh process is the whole point: it catches round-trip corruption through
    Postgres *and* non-deterministic extraction, neither of which an in-memory
    check can structurally detect.
 
-**`storage_path` is repo-relative, resolved to absolute at read time**
+~~**`storage_path` is repo-relative, resolved to absolute at read time**~~
+**Superseded in Phase 2, slice 2**, exactly as this item anticipated it would be.
+The column is now `storage_key` and holds a storage key, not a path; the
+repo-relative rule and the `to_storage_path`/`resolve_storage_path` helpers are
+gone. The reasoning that produced it survives the change: an absolute path is
+machine-specific data written into the database, the same class of mistake as
+hardcoding `localhost`. A storage key is machine-independent for a stronger
+reason — there is no machine in it at all.
 
-An absolute path is machine-specific data written into the database: `verify`
-re-extracts from `storage_path`, so storing `C:\Users\...` means verification can
-only ever pass on one laptop. That is the same class of mistake as hardcoding
-`localhost`. Paths are therefore stored relative to the repo root, with POSIX
-separators, and resolved against the repo root when read.
-
-The test corpus is committed for the same reason — a repo that cannot run its own
-`verify` on a clean clone fails the fresh-clone bar set in Phase 0. The MIT OCW
-material is CC-licensed, so redistributing it is fine, and it is the same corpus
-Phase 7's demo course uses.
-
-**This column becomes a storage key when Supabase Storage lands in Phase 2.**
-Phase 2 replacing it is a reason to change it again later, not a reason to write
-something knowingly broken now.
+The test corpus is committed for a reason that has *not* changed: a repo that
+cannot run its own `verify` on a clean clone fails the fresh-clone bar set in
+Phase 0. That bar is also why slice 2 kept a local backend rather than making
+Supabase the only one. The MIT OCW material is CC-licensed, so redistributing it
+is fine, and it is the same corpus Phase 7's demo course uses.
 
 **Known deviations and outstanding gaps**
 
@@ -399,8 +398,10 @@ visible.
   that may vanish. `GET /documents/{id}/status` derives a `stale` flag when the
   latest run is `running` and `started_at` is older than a threshold — computed
   on read, so it costs nothing until someone looks, and the polling UI is the
-  thing that looks. The threshold is **measured in slice 2 against a real job,
-  not guessed**, and recorded here with the measurement beside it.
+  thing that looks. The threshold is **measured against a real job, not
+  guessed**, and recorded here with the measurement beside it. (This said "slice
+  2" when it was written, before the storage slice was inserted ahead of the
+  worker. It is slice 3 — there is no job to measure until the worker exists.)
 
 - **Supabase Storage lands in this phase**, as a slice before the worker. The
   forcing argument is not tidiness: `POST /documents` receives bytes, the worker
@@ -413,6 +414,60 @@ visible.
   anticipated this: `storage_path` becomes a storage key here, and `verify`
   changes from reading disk to downloading.
 
+**Settled in slice 2 (storage)**
+
+- **Two backends, both real, chosen by `STORAGE_BACKEND`.** `local` writes under
+  `backend/.storage`; `supabase` is what the deploy runs on. This is not
+  speculative abstraction, which the protocol-with-one-implementation rule would
+  otherwise catch: both are used, and the local one is what makes a fresh clone
+  able to run `ingest` and `verify` with no credentials — the Phase 0 bar. The
+  default is `local` so that path is the one a newcomer hits first.
+- **Keys are `{user_id}/{filename}`, deliberately not content-addressed.** Under
+  a content hash, re-exporting a lecture with one slide changed is a different
+  key and therefore a second document, silently orphaning the first: a concept's
+  timeline splits across a semester and nothing errors. Keying on the filename
+  makes the same lecture the same document, which is what
+  `UNIQUE (user_id, storage_key)` and `--force` already assumed. The accepted
+  cost is that two different files with the same name collide — loudly, as
+  "already exists", which is the failure worth having. Pinned by
+  `test_the_same_file_under_a_different_name_is_a_different_document`.
+- **`storage_path` was renamed to `storage_key` (migration `0004`), not just
+  reinterpreted.** A column named `_path` holding a key documents the confusion
+  instead of removing it, and the rename was never going to be cheaper: one
+  development row, no production data, no type change. No data migration — a path
+  is not a key and no expression converts one to the other; the stale rows were
+  re-ingested.
+- **Supabase Storage is called over its REST API with `httpx`,** not through the
+  `supabase` client. It is two endpoints. `httpx` was already in the tree beneath
+  `openai` and is now declared directly, because this code calls it.
+- **The service key must be sent in the `apikey` header, not only
+  `Authorization`.** Found by the live round trip this slice insisted on, not in
+  production. The two key formats authenticate differently: a legacy
+  `service_role` key is a JWT that storage-api validates from `Authorization`
+  itself, while a current `sb_secret_...` key is not a JWT at all and is resolved
+  by the API gateway from `apikey`. Sending only `Authorization` with the latter
+  fails as `Invalid Compact JWS` — a message about token *shape*, which reads
+  like a corrupted secret rather than a missing header, and would have cost hours
+  to diagnose against a deployed worker. This is the same shape of failure as
+  Phase 0's Redis region mismatch, caught for the price of one test upload.
+- **A missing object is `ServiceError`; a 5xx or a dropped connection is not.**
+  Same split `extraction.py` makes, for the same consumer: the retry classifier
+  sees an exception type and nothing else. An object that is not there will not
+  be there on attempt 3, and neither will a 60MB file the bucket's size cap
+  rejects — permanent. Retrying those three times makes a settled fact look like
+  flakiness.
+- **Uploading is the caller's job, not `process_document`'s.** Slice 3's worker
+  can only ever be handed a key, so the CLI uploads and then calls the same
+  service the worker will. Accepted wart: an upload whose request then fails a
+  precondition — an unknown course, say — leaves the object behind. Phase 2 has
+  no delete path and does not grow one for this.
+- **The test suite can never reach the real bucket.** The `storage` fixture is
+  autouse and forces `local` at a `tmp_path`, with
+  `test_the_suite_never_reaches_the_real_bucket` asserting it. A suite that
+  *can* write to production storage eventually will. The consequence is that
+  `SupabaseStorage` has no automated test — it is exercised by hand, and the
+  round trip above is that exercise.
+
 **Build order**
 
 Three slices, ordered so that each one's failure mode is distinguishable from the
@@ -420,10 +475,11 @@ previous one's. Building the worker and the endpoint together and finding a
 document stuck tells you nothing about whether the lifecycle logic or the queue
 wiring is at fault.
 
-1. **`processing_runs` + `process_document`, driven from the CLI.** No arq, no
-   HTTP. The failure semantics get boring before anything asynchronous touches
-   them.
-2. **Supabase Storage.** `storage_path` becomes a key; `verify` downloads.
+1. ~~**`processing_runs` + `process_document`, driven from the CLI.**~~ **Done.**
+   No arq, no HTTP. The failure semantics get boring before anything
+   asynchronous touches them.
+2. ~~**Supabase Storage.**~~ **Done.** `storage_path` became `storage_key`;
+   `verify` downloads. Findings above.
 3. **arq worker + `POST /documents` + `GET /documents/{id}/status`.**
    Demonstrable with curl and no frontend, which is where the concurrent-upload
    and killed-worker criteria get tested.

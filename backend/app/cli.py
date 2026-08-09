@@ -15,6 +15,7 @@ from datetime import date
 from pathlib import Path
 
 from app.core.db import async_session
+from app.core.storage import get_storage, storage_key
 from app.models.user import SEED_USER_ID
 from app.schemas.ingestion import PlannedChunk
 from app.services.errors import ServiceError
@@ -79,8 +80,14 @@ async def _ingest(args: argparse.Namespace) -> int:
         print(f"no such file: {path}", file=sys.stderr)
         return 1
 
+    # The CLI is the one entrypoint that starts from a local file. Any path on
+    # this machine is fine now -- the repo-relative rule went away with
+    # `storage_path`, because what is stored is a key and the bytes are copied
+    # into storage rather than pointed at.
+    data = path.read_bytes()
+
     if args.dry_run:
-        pages = extract_pages(path)
+        pages = extract_pages(data, name=path.name)
         planned = plan_chunks(pages)
         _report(pages, planned)
 
@@ -94,6 +101,17 @@ async def _ingest(args: argparse.Namespace) -> int:
         print(f"\nOK: all {len(planned)} chunks slice back to their page text. Nothing written.")
         return 0
 
+    # Upload before processing, not inside it. `process_document` takes a key
+    # because slice 3's worker can only ever be given one, and putting the upload
+    # here keeps the CLI on the same code path the worker will use.
+    #
+    # Consequence accepted: an upload whose request then fails a precondition --
+    # an unknown course, say -- leaves the object behind. Phase 2 has no delete
+    # path and does not grow one for this.
+    key = storage_key(SEED_USER_ID, path.name)
+    await get_storage().upload(key, data)
+    logging.getLogger("app").info("uploaded %s (%d bytes)", key, len(data))
+
     # `process_document` owns its own commits -- it has to, because the
     # `processing_runs` row must be durable while the work is still running.
     async with async_session() as session:
@@ -101,7 +119,7 @@ async def _ingest(args: argparse.Namespace) -> int:
             session,
             user_id=SEED_USER_ID,
             course_id=args.course_id,
-            path=path,
+            storage_key=key,
             kind=args.kind,
             title=args.title or path.stem,
             force=args.force,
@@ -127,7 +145,7 @@ async def _verify(args: argparse.Namespace) -> int:
             session, user_id=SEED_USER_ID, document_id=args.document_id
         )
 
-    print(f"document {report.document_id}  {report.storage_path}")
+    print(f"document {report.document_id}  {report.storage_key}")
     print(f"  chunks checked: {report.chunk_count}")
     # Flushed so the failure detail on stderr lands after this header rather than
     # ahead of it when both are going to the same terminal.

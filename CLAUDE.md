@@ -84,12 +84,19 @@ bar is behavioural, not structural: a corrupt PDF must end `failed` with a
 uploaded at once must both complete, and the worker must survive a restart
 mid-job without losing the document.
 
-Two things carried in from earlier phases that bear on this one. Render's free
-Key Value plan has **no persistence** (see ROADMAP's deferred section), so Redis
-cannot be the record of truth for outstanding work — Postgres is, and Redis is
-only the dispatch mechanism. And Phase 1's note that `storage_path` becomes a
-storage key when Supabase Storage lands: an upload endpoint and a worker in a
-separate process cannot share a local filesystem path.
+Carried in from an earlier phase: Render's free Key Value plan has **no
+persistence** (see ROADMAP's deferred section), so Redis cannot be the record of
+truth for outstanding work — Postgres is, and Redis is only the dispatch
+mechanism.
+
+Slices 1 and 2 are done. Slice 2 landed storage: `documents.storage_key` (renamed
+from `storage_path` by migration `0004`) is a key of the form
+`{user_id}/{filename}`, resolved through `app/core/storage.py`, which has two
+real backends selected by `STORAGE_BACKEND` — `local` under `backend/.storage`
+for a credential-free clone, `supabase` for the deploy. Ingestion takes bytes and
+`verify` downloads; nothing on that path reads local disk. Uploading is the
+caller's job, not `process_document`'s, because slice 3's worker can only ever be
+handed a key. Full reasoning in ROADMAP's "Settled in slice 2".
 
 Phase 1 is closed, tagged `phase-1-complete`. A real lecture PDF ingests end to
 end, all three offset-verification layers pass, `verify` was proved able to fail

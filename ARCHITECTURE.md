@@ -146,12 +146,18 @@ parsed or inferred date outside the bounds is rejected as a parse failure rather
 than trusted. Without them, dating degrades from "inference" to "guessing."
 
 ### `documents`
-`id`, `user_id`, `course_id`, `kind`, `title`, `storage_path`,
+`id`, `user_id`, `course_id`, `kind`, `title`, `storage_key`,
 `occurred_at`, `occurred_at_source`, `status`, `page_count`, `created_at`
 
 - `kind` — `lecture | assignment | note | syllabus`
 - `occurred_at_source` — `parsed_syllabus | inferred_filename | manual`
 - `status` — ingestion lifecycle (`pending | processing | ready | failed`)
+- `storage_key` — `{user_id}/{filename}`, addressed through
+  `app/core/storage.py`. A key, not a filesystem path: the upload endpoint and
+  the worker are separate services with no shared disk. Keyed on the filename
+  rather than a content hash so a re-exported lecture is a re-ingest of the same
+  row instead of a second document orphaning the first — see ROADMAP's Phase 2
+  slice 2 notes.
 
 Carries `UNIQUE (id, user_id)` so children can reference the pair — see
 invariant 2.
