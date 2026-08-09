@@ -28,6 +28,9 @@ dependencies = [
     # `supabase` client. httpx is already in the tree under openai; it is
     # declared here because this code calls it directly.
     "httpx>=0.28",
+    # The job queue. Not Celery: arq is asyncio-native, so the worker calls the
+    # same async services the routes do instead of needing a sync mirror of them.
+    "arq>=0.26",
 ]
 
 [tool.uv]

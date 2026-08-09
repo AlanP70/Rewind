@@ -9,6 +9,23 @@ Rules that apply to every phase:
 - A phase is done when its done-criteria are literally true, checked by running
   something — not when the code exists.
 - Every phase ships to Render/Vercel. `main` is always deployable.
+- **A claim about a library's behaviour goes in this file only after it has been
+  read in that library's source or proved by running it — never from how it
+  plausibly ought to work.** Mark anything unverified as an assumption, in those
+  words.
+
+  This document is load-bearing. Decisions here get implemented confidently and
+  months later, by someone who reasonably treats them as settled and does not
+  re-derive them — so a wrong claim is not a note to correct, it is a bug with a
+  citation. Phase 2's retry rules asserted that arq retries any exception under
+  `max_tries`. It does not, it was never checked, and the code was written to
+  match the sentence. See the arq bullet in Phase 2 for what that would have
+  cost.
+
+  The failure mode that makes this worth a rule: a wrong claim about a library
+  usually produces **no error at all**. `max_tries` silently did nothing, and the
+  symptom — transient failures never retrying — is one you would attribute to the
+  network long before the queue.
 
 ---
 
@@ -348,8 +365,28 @@ visible.
   without `--force` — is **permanent**: it fails identically on all three
   attempts, so retrying burns time *and* produces three failed rows that make a
   deterministic problem look like flakiness. Anything else (network, OpenAI 5xx
-  or 429, a dropped connection) is **transient** and retries with `max_tries = 3`
-  under arq's backoff.
+  or 429, a dropped connection) is **transient** and retries with `max_tries = 3`.
+
+- **arq does not retry on an arbitrary exception, and this bullet said it did.**
+  Corrected in slice 3 after the wiring was tested against a real transient
+  fault. arq retries on `Retry`, `RetryJob` and `CancelledError`; every other
+  exception marks the job finished and failed (`worker.py`, `run_job`).
+  `max_tries` *bounds* retries that were requested — it does not create them.
+
+  The consequence of the original reading is the exact inversion of the rule
+  above: letting an exception propagate, which reads like the obvious way to say
+  "this failed, try it again", yields one attempt and no retries, turning every
+  transient failure permanent. So `process_document_task` catches broadly and
+  raises `Retry(defer=2 ** job_try)` — 2s then 4s — while `ServiceError` returns
+  instead. **Permanent is now the path that returns; transient is the path that
+  raises `Retry`.**
+
+  The ceiling is checked in the task rather than left to arq, so the third
+  attempt re-raises and fails as itself. Deferring past the ceiling instead makes
+  arq drop a phantom fourth attempt with a "max retries exceeded" line and no
+  exception to read. Verified by fault injection — a worker pointed at an
+  unresolvable storage host produced exactly three `processing_runs` rows, at
+  +0s, +2s and +6s, each carrying the connection error.
 
 - **The permanent/transient split is enforced at the point the library raises,
   not at the point the decision is read.** A malformed PDF surfaces as
@@ -529,6 +566,24 @@ that date came from.
   change, and there is no constraint that can force it (see the asymmetry note in
   `ARCHITECTURE.md`). One function is the only place that obligation can be
   reliably attached, so it exists before there is anything to cascade to.
+
+**Carried in from Phase 2, slice 2 — `documents` has no `ON DELETE CASCADE`**
+
+`fk_chunks_document_id_user_id` and the equivalent on `processing_runs` reference
+the `(id, user_id)` pair without a cascade, so deleting a document is a
+three-statement transaction — chunks, then runs, then the document — and a plain
+`DELETE FROM documents` fails on a foreign key instead. Found by hand when a
+stale Phase 1 row had to be removed after the `storage_key` rename.
+
+Deliberately not fixed in Phase 2, which has no delete path: a migration for a
+feature that does not exist is speculative. **It is recorded here because Phase 3
+is where it stops being free.** Re-dating and re-processing touch documents whose
+children may need rebuilding, and the first code that deletes one will either
+discover this as a foreign-key error or, worse, quietly leave chunks behind
+pointing at a document that is gone. Decide the cascade deliberately when
+`redate_document` lands — including whether `processing_runs` *should* cascade at
+all, given that run history outliving its document is arguably the point of
+keeping it.
 
 ---
 
