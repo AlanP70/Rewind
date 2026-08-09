@@ -63,7 +63,7 @@ async def test_reingest_without_force_refuses(session: AsyncSession) -> None:
     course_id = await _course(session)
     await _ingest(session, course_id)
 
-    with pytest.raises(ServiceError, match="pass --force"):
+    with pytest.raises(ServiceError, match="set force"):
         await _ingest(session, course_id, force=False)
 
 

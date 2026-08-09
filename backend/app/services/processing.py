@@ -29,14 +29,20 @@ rule Phase 1 applied to a half-filled embedding column, for the same reason.
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
+from arq.connections import ArqRedis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.storage import get_storage
+from app.core.config import settings
+from app.core.storage import get_storage, storage_key as build_storage_key
 from app.models import DocumentStatus, RunStatus
+from app.repositories import chunks as chunks_repo
 from app.repositories import documents as documents_repo
 from app.repositories import processing_runs as runs_repo
+from app.schemas.documents import DocumentProgress
 from app.services.embedding import EmbeddingResult, embed_document, estimate, pending_chunks
+from app.services.errors import NotFoundError
 from app.services.ingestion import IngestResult, ingest_document, resolve_document
 
 logger = logging.getLogger(__name__)
@@ -51,6 +57,100 @@ class ProcessResult:
     # None when embedding was skipped. The document then stays at `processing`,
     # which is honest: it has chunks but cannot be searched.
     embedding: EmbeddingResult | None
+
+
+@dataclass(frozen=True)
+class SubmitResult:
+    document_id: uuid.UUID
+    job_id: str
+    reused_document: bool
+
+
+async def submit_document(
+    session: AsyncSession,
+    queue: ArqRedis,
+    *,
+    user_id: uuid.UUID,
+    course_id: uuid.UUID,
+    filename: str,
+    data: bytes,
+    kind: str,
+    title: str,
+    force: bool = False,
+    embed: bool = True,
+) -> SubmitResult:
+    """Accept an uploaded PDF and hand it to the worker. Returns immediately.
+
+    The counterpart to `process_document`, not a variant of it: this one decides
+    whether the work should happen and records the intent to do it;
+    `process_document` does the work. They are separate because the caller here
+    is an HTTP request that must answer in milliseconds.
+
+    The order of the four steps is the whole design, and each boundary is chosen:
+
+    1. **Resolve first, before uploading a single byte.** Preconditions -- unknown
+       course, chunks present without `force` -- are complaints about the request,
+       so they raise here and become a 4xx with nothing enqueued and no run row.
+       This is the same rule Phase 2 already applied to `processing_runs`, and it
+       lands on HTTP exactly: a request that was never valid leaves no history of
+       an attempt, because there was no attempt.
+    2. **Upload.** Only now, once the request is known to be worth honouring, so a
+       rejected upload cannot strand an object nobody will ever ask for. The CLI
+       uploads before it resolves and can leave one behind; it has no separate
+       resolve step to put first, and the API does.
+    3. **Commit.** The row and the object become visible together.
+    4. **Enqueue**, last, because a job whose document is not yet committed can be
+       picked up by a worker that cannot see it.
+
+    If the enqueue itself fails, the caller gets a 5xx and the document sits at
+    `pending` with its bytes already stored -- so re-uploading resolves to the
+    same row, finds no chunks, and enqueues again. That is the intended repair,
+    and it works because Postgres holds the intent and Redis only carries the
+    request.
+    """
+    storage_key = build_storage_key(user_id, filename)
+
+    resolved = await resolve_document(
+        session,
+        user_id=user_id,
+        course_id=course_id,
+        storage_key=storage_key,
+        kind=kind,
+        title=title,
+        force=force,
+    )
+
+    await get_storage().upload(storage_key, data)
+    await session.commit()
+
+    job = await queue.enqueue_job(
+        "process_document_task",
+        user_id=str(user_id),
+        course_id=str(course_id),
+        storage_key=storage_key,
+        kind=kind,
+        title=title,
+        embed=embed,
+    )
+    # arq returns None when a job with the same id already exists. Nothing here
+    # sets a job id, so ids are generated and this cannot happen -- but the type
+    # is optional, and asserting it would crash the request rather than explain.
+    #
+    # Not a `ServiceError`: those are things the caller can fix, which is what
+    # lets the route map every one of them to a 4xx. This is the server failing,
+    # so it must become a 500 -- and the repair is re-uploading, which resolves to
+    # the same row and enqueues again.
+    if job is None:
+        raise RuntimeError(f"could not enqueue {storage_key}; it may already be queued")
+
+    logger.info(
+        "queued %s as document %s (job %s)", storage_key, resolved.document.id, job.job_id
+    )
+    return SubmitResult(
+        document_id=resolved.document.id,
+        job_id=job.job_id,
+        reused_document=resolved.reused,
+    )
 
 
 async def process_document(
@@ -136,6 +236,52 @@ async def process_document(
         attempts=attempts,
         ingest=ingested,
         embedding=embedded,
+    )
+
+
+async def document_progress(
+    session: AsyncSession, *, user_id: uuid.UUID, document_id: uuid.UUID
+) -> DocumentProgress:
+    """Everything the polling client needs, in one read.
+
+    Reads Postgres and never Redis, which is the point rather than a convenience.
+    Render's free Key Value plan has no persistence, so the queue can lose every
+    job it is holding; the `documents` and `processing_runs` rows cannot. A status
+    endpoint answering from job state would report "no such job" for work that is
+    still owed.
+
+    `stale` is derived here rather than stored. A stored flag needs something to
+    write it -- a sweeper, on a timer, whose failure mode is silence -- whereas a
+    comparison against `started_at` is correct the instant it is read and costs
+    nothing until someone asks. Nothing acts on it: it is a hint that a run which
+    claims to be `running` has probably lost its worker, and slice 4's UI is what
+    surfaces that.
+    """
+    document = await documents_repo.get(session, document_id, user_id)
+    if document is None:
+        raise NotFoundError(f"no document {document_id} for this user")
+
+    total = await chunks_repo.count_for_document(session, document_id)
+    unembedded = await chunks_repo.count_unembedded(session, document_id)
+    run = await runs_repo.latest_for_document(session, document_id)
+
+    stale = False
+    if run is not None and run.status == RunStatus.RUNNING and run.started_at is not None:
+        age = datetime.now(UTC) - run.started_at
+        stale = age.total_seconds() > settings.stale_run_after_seconds
+
+    return DocumentProgress(
+        document_id=document_id,
+        status=document.status,
+        chunks_total=total,
+        # Derived rather than counted separately: one fewer query, and the two
+        # numbers cannot disagree the way two independent counts could if a batch
+        # commits between them.
+        chunks_embedded=total - unembedded,
+        attempts=run.attempts if run else None,
+        run_status=run.status if run else None,
+        error=run.error if run else None,
+        stale=stale,
     )
 
 

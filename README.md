@@ -60,7 +60,23 @@ needed. The defaults in `.env.example` point at the local Docker containers and
 work unedited — the Supabase values are there commented out, for when you need
 them.
 
-**3. Frontend**, in a second terminal.
+**3. Worker**, in a second terminal.
+
+```bash
+cd backend
+uv run arq app.workers.settings.WorkerSettings
+```
+
+This is what processes uploads. Without it `POST /documents` still answers 202
+and the document sits at `pending` forever — which is the intended behaviour, not
+a bug: Postgres records that the work is owed, and starting a worker later picks
+it up.
+
+It is deliberately not a Compose service. The worker imports the same code the
+API does, so running it from the same checkout is what keeps the two honest;
+baking it into an image would mean rebuilding to test a task.
+
+**4. Frontend**, in a third terminal.
 
 ```bash
 cd frontend
@@ -69,7 +85,7 @@ npm install
 npm run dev
 ```
 
-**4. Open http://localhost:3000.** You should see `status ok`, `db ok`,
+**5. Open http://localhost:3000.** You should see `status ok`, `db ok`,
 `redis ok`.
 
 ## Verifying it works
@@ -99,6 +115,39 @@ docker compose start postgres              # both recover without restarting the
 
 Recovery needs no restart because the engine is built with `pool_pre_ping`,
 which discards dead connections instead of handing them out.
+
+## Uploading a document
+
+There is no upload UI yet — that is the next slice. Two routes, and curl is
+enough. You need a course first:
+
+```bash
+cd backend
+uv run python -m app.cli create-course "Algorithms" \
+  --starts-on 2024-09-01 --ends-on 2024-12-15
+```
+
+```bash
+curl -X POST http://localhost:8000/documents \
+  -F "course_id=<the id printed above>" \
+  -F "file=@../test-data/Depth-First_Search_Lecture.pdf"
+# 202 {"document_id":"...","job_id":"...","reused_document":false}
+
+curl http://localhost:8000/documents/<document_id>/status
+# {"status":"ready","chunks_total":9,"chunks_embedded":9,"attempts":1,
+#  "run_status":"succeeded","error":null,"stale":false}
+```
+
+**202, not 201** — the document exists but is not yet what you asked for. Poll
+the status route until `status` is `ready` or `failed`; both are terminal, and a
+failed document is still a 200 with the reason in `error`.
+
+Form fields on the upload: `kind` (default `lecture`), `title` (defaults to the
+filename), `force` (default false — a re-upload of a document that already has
+chunks is a 409 without it, matching the CLI's `--force`), and `embed` (default
+true). Pass `embed=false` to skip the OpenAI call when you are testing the same
+PDF repeatedly; the document then stops at `processing`, because a document with
+no vectors cannot be searched and so is not `ready`.
 
 ## Supabase
 

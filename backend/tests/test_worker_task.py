@@ -13,6 +13,7 @@ because what is under test is the translation between an exception and arq's
 retry protocol, not the processing.
 """
 
+import asyncio
 import uuid
 
 import pytest
@@ -109,6 +110,23 @@ async def test_the_last_attempt_raises_the_original_error(fails_with) -> None:
 
     with pytest.raises(ConnectionError):
         await _run(_ctx(MAX_TRIES))
+
+
+async def test_a_shutdown_mid_job_is_not_swallowed(fails_with) -> None:
+    """A graceful worker restart must leave the document owed, not failed.
+
+    arq cancels its running tasks on shutdown, and `CancelledError` is one of the
+    three exceptions it re-enqueues on. That only works if it reaches arq: it
+    inherits from `BaseException`, not `Exception`, so the broad `except` in the
+    task does not catch it -- but that is a property of the class hierarchy rather
+    than of anything written here, and narrowing the handler to
+    `except ConnectionError` some day would silently turn every restart into a
+    permanent failure on a document nobody had finished reading.
+    """
+    fails_with(asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run(_ctx(1))
 
 
 async def test_the_worker_and_arq_agree_on_the_ceiling() -> None:

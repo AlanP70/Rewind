@@ -36,6 +36,26 @@ async def list_for_document(
     return list(result.scalars().all())
 
 
+async def latest_for_document(
+    session: AsyncSession, document_id: uuid.UUID
+) -> ProcessingRun | None:
+    """The most recent attempt, or None if none has been opened yet.
+
+    Ordered by `attempts` rather than `started_at`: the attempt number is what
+    `UNIQUE (document_id, attempts)` makes strictly increasing, whereas two runs
+    opened in the same millisecond could tie on a timestamp. A separate query
+    rather than the last element of `list_for_document`, which would load every
+    attempt to read one -- and the status endpoint is the thing being polled.
+    """
+    result = await session.execute(
+        select(ProcessingRun)
+        .where(ProcessingRun.document_id == document_id)
+        .order_by(ProcessingRun.attempts.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def create(
     session: AsyncSession,
     *,

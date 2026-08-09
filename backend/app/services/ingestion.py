@@ -22,7 +22,7 @@ from app.repositories import courses as courses_repo
 from app.repositories import documents as documents_repo
 from app.schemas.ingestion import PlannedChunk
 from app.services.chunking import chunk_page
-from app.services.errors import ServiceError
+from app.services.errors import ConflictError, NotFoundError, ServiceError
 from app.services.extraction import extract_pages
 
 
@@ -120,10 +120,13 @@ async def resolve_document(
     existing chunks without `force`. None of it is a processing failure, so none
     of it produces a run.
 
-    The bytes are already in storage by the time this runs; the caller uploads.
-    That ordering is forced by slice 3, where the upload endpoint has the bytes
-    and the worker only ever gets a key -- so the key, not a path, is what
-    identifies a document here.
+    Uploading is the caller's job, not this function's -- the worker only ever
+    receives a key and never saw the bytes, so the key is what identifies a
+    document here. The two callers upload on opposite sides of this call and both
+    are right: the CLI uploads first, because `process_document` resolves
+    internally and there is no earlier hook; `submit_document` resolves first,
+    because it has one, and a request rejected here should not leave an object
+    behind. Nothing in this function reads the object either way.
 
     Re-ingesting the same key is the same document, not a second one -- that is
     what `UNIQUE (user_id, storage_key)` encodes. A re-ingest that would destroy
@@ -135,7 +138,7 @@ async def resolve_document(
     """
     course = await courses_repo.get(session, course_id, user_id)
     if course is None:
-        raise ServiceError(f"no course {course_id} for this user")
+        raise NotFoundError(f"no course {course_id} for this user")
 
     document = await documents_repo.get_by_storage_key(session, user_id, storage_key)
 
@@ -151,14 +154,18 @@ async def resolve_document(
         return ResolvedDocument(document=document, reused=False, existing_chunks=0)
 
     if document.course_id != course_id:
-        raise ServiceError(
+        raise ConflictError(
             f"{storage_key} is already ingested under course {document.course_id}"
         )
 
     existing = await chunks_repo.count_for_document(session, document.id)
     if existing and not force:
-        raise ServiceError(
-            f"{storage_key} already has {existing} chunks; pass --force to replace them"
+        # Worded without naming a flag. This message reaches two callers who spell
+        # the same decision differently -- `--force` on the CLI, `force=true` in
+        # the form -- and telling an HTTP client to "pass --force" sends it looking
+        # for something that does not exist.
+        raise ConflictError(
+            f"{storage_key} already has {existing} chunks; set force to replace them"
         )
 
     return ResolvedDocument(document=document, reused=True, existing_chunks=existing)

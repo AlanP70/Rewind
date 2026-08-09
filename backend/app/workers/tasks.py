@@ -66,7 +66,7 @@ async def process_document_task(
                 # one document -- a retry after a transient failure, or a job
                 # re-run after a hard kill. Attempt 1 can have written chunks and
                 # then died embedding them. With `force=False`, attempt 2 would
-                # hit "chunks exist, pass --force" and fail *permanently* on a
+                # hit "chunks exist, set force" and fail *permanently* on a
                 # problem that was transient, which is the exact inversion the
                 # retry rules exist to prevent. `ingest_document` deletes and
                 # rebuilds in one transaction, so replacing is always safe.

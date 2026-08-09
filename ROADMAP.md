@@ -505,6 +505,117 @@ visible.
   `SupabaseStorage` has no automated test — it is exercised by hand, and the
   round trip above is that exercise.
 
+**Settled in slice 3 (worker + upload routes)**
+
+- **`submit_document` resolves before it uploads, and enqueues last.** Four steps
+  and every boundary is chosen: resolve (preconditions raise here, so a bad
+  request becomes a 4xx with nothing enqueued and no run row), upload, commit,
+  enqueue. Enqueueing last is not stylistic — a worker can claim a job the
+  instant it is queued, so a job whose document row is still uncommitted gets
+  handed a document the worker cannot see. This is where "a precondition failure
+  records no run" lands on HTTP exactly: a request that was never valid leaves no
+  history of an attempt, because there was no attempt.
+
+  Note the CLI does the opposite — it uploads *before* resolving — and both are
+  right. The CLI has no separate resolve step to put first; the API does.
+
+- **A failed enqueue is a 5xx, and re-uploading is the repair.** The document
+  sits at `pending` with its bytes already stored, so the second upload resolves
+  to the same row, finds no chunks and enqueues again. That works only because
+  Postgres holds the intent and Redis merely carries the request — the same
+  premise the no-persistence Key Value plan forced.
+
+  Consequence for the error types: `ServiceError` had to gain `NotFoundError` and
+  `ConflictError` subclasses, because HTTP needs 404 vs 409 vs 400 where the CLI
+  needed only "the user did something wrong". The rule holding it together is
+  that **every `ServiceError` is a 4xx** — the caller can fix it by definition —
+  so the route maps the class to a status code with a 400 default and no 5xx
+  entry. The one server-side failure on that path, arq returning no job, raises
+  `RuntimeError` rather than `ServiceError` precisely so it does not land in the
+  4xx table. Add a subclass when an entrypoint has to *act* differently, never to
+  categorise.
+
+- **The 409 guard means "chunks exist now", not "no job is in flight".** Found by
+  accident: a re-upload sent while the first job was still running returned 202,
+  not 409, because at that instant the document had no chunks yet. Both jobs then
+  ran against the same document and it ended `ready` at attempt 2 with 9/9 chunks
+  — correct, and only because the task always re-ingests with `force=True` and
+  `embed_document`'s work list is "chunks where `embedding IS NULL`". The
+  at-least-once idempotency built in Phase 1 is what absorbs this.
+
+  Left as is. Closing the race properly means locking the document row for the
+  duration of the request or checking for a live run, and the failure it prevents
+  is a duplicate upload of the same file within a few seconds that already
+  produces the right answer. Recorded so it is a known property rather than a
+  surprise the first time `attempts = 2` shows up on a document nobody retried.
+
+- **Status reports counts, never a percentage.** `chunks_total`,
+  `chunks_embedded`, `status`, `attempts`, `run_status`, `error`, `stale`. Until
+  chunking finishes there are no chunks, so any single number would have to
+  invent progress for the extraction phase — and an invented number gets rendered
+  confidently and debugged later as if it meant something. Same principle as
+  Phase 1 ending status at `processing` rather than `ready`.
+
+  A failed document is **200**, not 4xx: the request to *know* succeeded. Only an
+  unknown document is a 404. A 4xx here would fire a client's error handling on a
+  perfectly good answer and hide the error being reported.
+
+- **The stale threshold, measured.** `stale_run_after_seconds = 960`. Two
+  independent constraints, and the binding one was not the obvious one:
+
+  - *Lower bound, from arq.* Its in-progress lock is
+    `psetex(job_timeout + 10s)` (`worker.py`, `in_progress_timeout_s` and the
+    `psetex` in the poll loop). Until it expires no worker may re-claim the job;
+    after it expires any worker does. With `job_timeout = 900` that is 910s, so a
+    threshold below it would report `stale` on a job arq is about to pick up by
+    itself. **Measured:** a worker killed mid-job with `job_timeout = 15` had its
+    job re-claimed after 25.18s — `15 + 10`, exactly.
+  - *Ruled out, from a job duration.* A real end-to-end run of the 5-page test
+    lecture took 3.9s for 9 chunks with embedding — 0.44s per chunk, dominated by
+    OpenAI round trips. A 600-chunk document is therefore minutes, so any
+    threshold sized from an *observed* job calls healthy long documents dead.
+    Measurement's job here was to eliminate the approach, not to supply a number.
+
+  960 clears 910 with 50s spare. The cost of being right rather than fast: a
+  hard-killed worker is not flagged for ~16 minutes, which is acceptable because
+  nothing acts on the flag — recovery is arq's, and `stale` is only a hint for
+  the UI.
+
+- **A crash consumes one of the three tries.** The re-claimed job came back as
+  `try=2`, not as a fresh attempt. So `max_tries = 3` is a budget shared between
+  transient failures and worker deaths, and three crashes on the same document
+  exhaust it. Left as is: a document that has killed three workers is not one to
+  keep feeding them.
+
+- **The crashed run row is left stranded at `running`, deliberately.** Nothing
+  closes it, because the process that would have was killed — that row *is* the
+  evidence of the crash. It stays readable because `latest_for_document` orders
+  by `attempts`, so the status endpoint always answers from the live attempt
+  while the stranded one remains as history. Ordering by `attempts` rather than a
+  timestamp also matters on its own: `UNIQUE (document_id, attempts)` is what
+  makes the attempt number strictly increasing, whereas two runs opened in the
+  same millisecond can tie on `started_at`.
+
+- **A graceful restart must not look like a permanent failure.** arq cancels
+  running tasks on shutdown and `CancelledError` is one of the three exceptions
+  it re-enqueues on — which works only because it inherits from `BaseException`,
+  so the task's broad `except Exception` does not catch it. That is a property of
+  the class hierarchy rather than of anything written here, so it is pinned by a
+  test: narrowing that handler some day would silently turn every deploy into a
+  batch of permanently failed documents.
+
+- **A document is `pending`, not `processing`, while its first run is `running`.**
+  `process_document` moves the status only once ingestion has produced something.
+  Not worth a status write to fix — `run_status` already tells a client the
+  difference, and the endpoint returns both.
+
+- **The worker's log handler goes on the `app` logger, not the root.** arq
+  installs a handler on the `arq` logger only, so the root has none and every
+  service log line is dropped — the worker runs correctly and says nothing. The
+  obvious fix, `basicConfig`, prints each arq job line **twice**, because arq's
+  own records propagate up to the new root handler. A `StreamHandler` on `app`
+  with `propagate = False` is what gives one copy of each.
+
 **Build order**
 
 Three slices, ordered so that each one's failure mode is distinguishable from the
@@ -517,9 +628,9 @@ wiring is at fault.
    asynchronous touches them.
 2. ~~**Supabase Storage.**~~ **Done.** `storage_path` became `storage_key`;
    `verify` downloads. Findings above.
-3. **arq worker + `POST /documents` + `GET /documents/{id}/status`.**
-   Demonstrable with curl and no frontend, which is where the concurrent-upload
-   and killed-worker criteria get tested.
+3. ~~**arq worker + `POST /documents` + `GET /documents/{id}/status`.**~~
+   **Done.** Demonstrable with curl and no frontend, which is where the
+   concurrent-upload and killed-worker criteria got tested. Findings above.
 4. **`features/upload/`** — drag-drop plus polling progress.
 
 Slice 1 is also where `tests/` gets database fixtures, so Phase 1's outstanding
@@ -528,11 +639,16 @@ it, rather than paying the fixture cost for a single test.
 
 **Done when**
 - Uploading through the UI produces a document that reaches `ready` without any
-  manual step.
+  manual step. — *HTTP half proved in slice 3: `POST /documents` to `ready` with
+  9/9 chunks embedded, 5.2s wall clock, no manual step. The UI is slice 4.*
 - A deliberately corrupt PDF ends `failed` with a readable error in
-  `processing_runs`, and the API says so.
-- Two documents uploaded at once both complete.
-- The worker survives a restart mid-job without losing the document.
+  `processing_runs`, and the API says so. — **Met.**
+- Two documents uploaded at once both complete. — **Met.** Two concurrent
+  uploads, distinct document rows, both `ready` at 9/9.
+- The worker survives a restart mid-job without losing the document. — **Met.**
+  Hard-killed mid-run (document `pending`, run 1 `running`, 0 chunks), restarted,
+  re-claimed after 25.18s as attempt 2, `ready` at 9/9. See the stale-threshold
+  and stranded-run notes above.
 
 ---
 

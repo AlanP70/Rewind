@@ -38,6 +38,34 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_service_key: str | None = None
 
+    # How long a run may sit at `running` before the status endpoint calls it
+    # stale. Crash *detection*, deliberately ours rather than arq's -- arq's own
+    # mechanism lives in the Redis that may vanish, and Render's free Key Value
+    # plan has no persistence.
+    #
+    # Must exceed `job_timeout` + 10s, which is arq's in-progress lock -- it holds
+    # a hard-killed job's claim for exactly that long, after which any worker
+    # re-claims it (`arq/worker.py`, `in_progress_timeout_s` and the `psetex` in
+    # `_poll_iteration`). Verified by killing a worker mid-job: re-claimed after
+    # 25.18s against a 15s timeout. Below that bound the endpoint would report
+    # `stale` on a job arq is about to pick up by itself. 960 > 910 with 50s spare.
+    #
+    # Derived from the worker's `job_timeout` (900s) plus a minute for a timing-out
+    # job to record its failure, rather than from a job duration. Measurement is
+    # what rules the alternative out: a real end-to-end run of the 5-page test
+    # lecture took 3.9s for 9 chunks with embedding, ~0.44s per chunk and dominated
+    # by OpenAI round trips. A 600-chunk document is then minutes, so any threshold
+    # sized from the *observed* job would call healthy long documents dead. Past
+    # `job_timeout` the reasoning inverts and needs no extrapolation: arq cancels a
+    # job at that point, so a run still claiming `running` afterwards has no one
+    # left to finish it.
+    #
+    # The cost of being right rather than fast: a hard-killed worker is not
+    # flagged for ~16 minutes. Acceptable because nothing acts on this. Recovery is
+    # arq's, and `stale` is only a hint for slice 4's UI -- computed on read, so it
+    # costs nothing until someone looks.
+    stale_run_after_seconds: int = 960
+
     @property
     def storage_root(self) -> Path:
         """Where `LocalStorage` writes.

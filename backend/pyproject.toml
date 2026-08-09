@@ -31,6 +31,9 @@ dependencies = [
     # The job queue. Not Celery: arq is asyncio-native, so the worker calls the
     # same async services the routes do instead of needing a sync mirror of them.
     "arq>=0.26",
+    # What Starlette parses multipart uploads with. FastAPI does not depend on it,
+    # so `POST /documents` fails at import without it -- not at request time.
+    "python-multipart>=0.0.20",
 ]
 
 [tool.uv]

@@ -89,7 +89,18 @@ persistence** (see ROADMAP's deferred section), so Redis cannot be the record of
 truth for outstanding work — Postgres is, and Redis is only the dispatch
 mechanism.
 
-Slices 1 and 2 are done. Slice 2 landed storage: `documents.storage_key` (renamed
+Slices 1, 2 and 3 are done; only slice 4 (`features/upload/`) remains. Slice 3
+landed the arq worker, `POST /documents` and `GET /documents/{id}/status`. Three
+of the four done-when criteria are met and verified live — corrupt PDF, two
+concurrent uploads, worker killed mid-job — and the fourth is met on the HTTP
+side, awaiting the UI. Two findings from it are load-bearing and written up in
+ROADMAP's "Settled in slice 3": **arq retries only on `Retry`, `RetryJob` and
+`CancelledError`**, so permanent is the path that returns and transient is the
+path that raises `Retry`; and **`stale_run_after_seconds` must exceed
+`job_timeout + 10`**, because that is arq's in-progress lock and a shorter
+threshold reports `stale` on a job arq is about to re-claim.
+
+Slice 2 landed storage: `documents.storage_key` (renamed
 from `storage_path` by migration `0004`) is a key of the form
 `{user_id}/{filename}`, resolved through `app/core/storage.py`, which has two
 real backends selected by `STORAGE_BACKEND` — `local` under `backend/.storage`

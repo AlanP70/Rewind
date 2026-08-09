@@ -142,7 +142,7 @@ async def test_a_precondition_failure_records_no_run(
     key = await _upload(storage, LECTURE.name, LECTURE.read_bytes())
     result = await _process(session, course_id, key)
 
-    with pytest.raises(ServiceError, match="pass --force"):
+    with pytest.raises(ServiceError, match="set force"):
         await _process(session, course_id, key)
 
     runs = await runs_repo.list_for_document(session, result.document_id)
