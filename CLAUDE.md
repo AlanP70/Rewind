@@ -71,32 +71,34 @@ changing the schema.
 
 ## Current phase
 
-**Phase 2 — job queue.** Scope: migration for `processing_runs`; an arq worker
-whose task calls the *same service* as the CLI; `POST /documents` that enqueues
-and returns a document id immediately; `GET /documents/{id}/status` reporting
-status and progress; `features/upload/` with drag-drop and a polling progress UI;
-retry with attempt counting and a recorded `error` on failure. Nothing else — no
-search, no dating, no concepts.
+**Phase 3 — dating.** Scope: syllabus parsing, filename inference, a manual
+override endpoint, and a UI showing each document's date and where that date came
+from. Documents that cannot be dated are surfaced, never silently defaulted.
+Nothing else — no search, no concepts.
 
-**Read ROADMAP.md's Phase 2 section before writing any of it.** The "done when"
-bar is behavioural, not structural: a corrupt PDF must end `failed` with a
-*readable* error in `processing_runs` and the API must say so, two documents
-uploaded at once must both complete, and the worker must survive a restart
-mid-job without losing the document.
+**Read ROADMAP.md's Phase 3 section before writing any of it.** The load-bearing
+constraint is invariant 4 made concrete: **exactly one service function,
+`redate_document`, writes `documents.occurred_at`**, and all three dating paths
+route through it. It exists before there is anything to cascade to, because
+Phase 5 adds a write that must accompany every date change and no constraint can
+force it.
 
-Carried in from an earlier phase: Render's free Key Value plan has **no
-persistence** (see ROADMAP's deferred section), so Redis cannot be the record of
-truth for outstanding work — Postgres is, and Redis is only the dispatch
-mechanism.
+Two items are explicitly carried into this phase by ROADMAP: `documents` has no
+`ON DELETE CASCADE`, which "stops being free" here; and Phase 2's frontend has no
+test runner, so if Phase 3's dating UI justifies one, the `describe()` assertions
+in Phase 2's outstanding-gaps item land in the same slice.
 
-All four slices are done and all four done-when criteria are met and verified
-live. Slice 4 landed `features/upload/`, the `/upload` page and `GET /courses`;
-every row state was driven in a real browser, the fast ones constructed in the
-database while the page polled. Two rules from it that the code depends on and
-cannot enforce: **`Progress` is deliberately absent from `components/ui/`** —
-installing it is how a fabricated extraction percentage gets added later — and
-**`stale` renders as an addition to the stage, never a replacement**, so a
-stranded job still says which phase stranded it.
+Phase 2 is closed, tagged `phase-2-complete`. The queue works end to end: a
+corrupt PDF fails readably, two concurrent uploads both finish, and a worker
+killed mid-job re-claims its document. Redis is only dispatch — Postgres is the
+record of intent, because Render's free Key Value plan has no persistence.
+
+Three rules from Phase 2 that the code depends on and cannot enforce:
+**`Progress` is deliberately absent from `components/ui/`** — installing it is how
+a fabricated extraction percentage gets added later; **`stale` renders as an
+addition to the stage, never a replacement**, so a stranded job still says which
+phase stranded it; and **`stale_run_after_seconds` must exceed `job_timeout + 10`**,
+which is arq's in-progress lock.
 
 Slice 3 landed the arq worker, `POST /documents` and
 `GET /documents/{id}/status`. Two findings from it are load-bearing and written

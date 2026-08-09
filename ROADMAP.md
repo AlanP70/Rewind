@@ -699,6 +699,29 @@ Slice 1 is also where `tests/` gets database fixtures, so Phase 1's outstanding
 re-ingest test lands with it — that is the amortisation condition Phase 1 set for
 it, rather than paying the fixture cost for a single test.
 
+**Known deviations and outstanding gaps**
+
+- **`features/upload/` has no automated test, so the no-invented-percentage
+  guarantee rests on one manual verification.** `describe()` in `UploadRow.tsx`
+  is the whole state table and it is a pure function of `DocumentProgress` — the
+  obvious thing to pin, and cheap to pin, once there is anything to run it with.
+  What it should assert is what was checked by hand: `processing` with
+  `chunks_total === 0` produces **no** `ratio`, and a ratio is never derived from
+  anything but the two counts.
+
+  The risk this records is the same one the `CancelledError` test exists to
+  cover. Both guarantees are invisible in the code that depends on them: nothing
+  about `describe()` announces that returning a `ratio` during extraction would
+  be a fabrication, so a future session tidying the branches could collapse them
+  and produce a bar that looks fine and means nothing. The difference is that the
+  arq behaviour is pinned and this is not.
+
+  **Do not add a test runner for this alone.** The amortisation condition is the
+  same one Phase 1 set for the re-ingest test that waited for database fixtures:
+  add it when the frontend independently justifies one, most likely Phase 4 when
+  the timeline UI lands and there is real client-side logic to test. Write these
+  assertions in the same slice that installs the runner.
+
 **Done when**
 - Uploading through the UI produces a document that reaches `ready` without any
   manual step. — **Met.** Driven in a real headless Chrome over CDP, with
@@ -710,18 +733,26 @@ it, rather than paying the fixture cost for a single test.
 - Two documents uploaded at once both complete. — **Met.** Two concurrent
   uploads, distinct document rows, both `ready` at 9/9. Re-proved through the UI
   in slice 4: two files dropped together, both rows `Ready — 9 chunks` at t+3.5s.
-
-Every state the row can render was checked against a real browser, the fast ones
-by constructing them in the database while the page polled: `Queued`;
-`Extracting text` with no bar; `Embedding — 3 of 9` with the bar measured at
-33.3333%; `Ready — 9 chunks`; `Failed` with the backend's error verbatim
-(`could not read … No /Root object!`); the 409 refusal as a separate red row; and
-the amber stale note, forced by backdating a `running` run past
-`stale_run_after_seconds`. No percentage appeared in any label.
 - The worker survives a restart mid-job without losing the document. — **Met.**
   Hard-killed mid-run (document `pending`, run 1 `running`, 0 chunks), restarted,
   re-claimed after 25.18s as attempt 2, `ready` at 9/9. See the stale-threshold
   and stranded-run notes above.
+
+**Status — complete** (as of 2026-08-09), tagged `phase-2-complete`.
+
+Every state a row can render was checked against a real browser rather than
+reasoned about, the fast ones held still by constructing them in the database
+while the page polled: `Queued`; `Extracting text` with **no bar element at
+all**; `Embedding — 3 of 9` with the bar measured at 33.3333%; `Ready — 9
+chunks`; `Failed` carrying the backend's error verbatim (`could not read … No
+/Root object!`); the 409 refusal as a separate red row; and the amber stale note,
+forced by backdating a `running` run past `stale_run_after_seconds`. No label
+contained a percentage — asserted against the DOM's rendered `style.width`, not
+against the label text, so a bar at a fabricated width would have been caught.
+
+The browser was driven over CDP (`--remote-debugging-port`), with
+`DOM.setFileInputFiles` handing the real hidden input real PDFs, so what ran was
+the page's own path rather than a simulation of it.
 
 ---
 
