@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Link from "next/link";
 import "./globals.css";
 import { Providers } from "./providers";
 
@@ -29,6 +30,14 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        <nav className="flex gap-4 border-b border-black/10 px-6 py-3 text-sm dark:border-white/15">
+          <Link href="/" className="font-medium">
+            Rewind
+          </Link>
+          <Link href="/upload" className="opacity-70 hover:opacity-100">
+            Upload
+          </Link>
+        </nav>
         <Providers>{children}</Providers>
       </body>
     </html>

@@ -616,9 +616,70 @@ visible.
   own records propagate up to the new root handler. A `StreamHandler` on `app`
   with `propagate = False` is what gives one copy of each.
 
+**Settled in slice 4 (upload UI)**
+
+- **`Progress` is deliberately not installed in `components/ui/`, and this line
+  exists so nobody adds it back.** shadcn is added in this slice with exactly two
+  components, `Button` and `Card`. A progress bar is the obvious third, and it is
+  omitted on purpose: the status endpoint returns counts rather than a percentage
+  because until chunking finishes there are no chunks, so any single number would
+  have to invent progress for the extraction phase. Having a `Progress` component
+  sitting in the tree is how that invention happens later — someone wires it to
+  elapsed time, it animates, and it is debugged in Phase 4 as if it meant
+  something. The bar that *is* rendered during embedding is eight lines of markup
+  driven by `chunks_embedded / chunks_total`, and it exists only where both
+  numbers are real. Install `Progress` when there is a real ratio it can show.
+
+- **The stage a document is in is a function of counts, not a status field.**
+  `processing` splits into "Extracting text" and "Embedding — 3 of 9" on
+  `chunks_total === 0`, because that is the only signal distinguishing them. No
+  `extracting` status was added: it would be a fifth value in a CHECK constraint
+  to encode something already derivable, and `documents.status` is deliberately
+  current state rather than a progress log.
+
+  Extraction therefore gets an indeterminate spinner and **no bar at all**. The
+  honest rendering of "we do not know how far along this is" is not a bar at 10%.
+
+- **`stale` renders as an addition to the stage, not a replacement for it.** The
+  flag exists to name a job whose worker is gone; a row that swapped to "Stalled"
+  would lose the information that it stalled *during extraction*. So the stage
+  line stays and an amber note appears under it naming the attempt number. This
+  is what makes the flag worth computing — it was already correct on the wire in
+  slice 3 and invisible, which is the same as absent.
+
+- **A refused upload is a different shape from a failed document, not a row with
+  a fake status.** A 409 or 404 means nothing was enqueued and no run row exists,
+  so there is no document to poll. Modelling it as `failed` would file "you
+  already uploaded this" next to "this PDF is broken", and the two have different
+  repairs. `RejectedUpload` carries the server's `detail` verbatim and nothing
+  else.
+
+- **Polling stops at `ready` and `failed`.** `refetchInterval` returns `false` on
+  a terminal status rather than running forever at a slower interval. Worth
+  knowing when testing by hand: once a row reaches `ready`, changing the row in
+  the database will not move the UI, because nothing is asking any more.
+
+- **`GET /courses` is part of this slice.** A UUID pasted into a text box is not
+  an upload page, and the phase's own done-when cannot be demonstrated through
+  the UI without it. Courses are still *created* by the CLI, where term bounds
+  get entered deliberately rather than typed into a form field. The route brought
+  `api/deps.py` with it: a second router importing `get_session` from
+  `api/documents.py` makes the two depend on each other in an arbitrary
+  direction. `ingestion.list_courses` is a three-line pass-through to the
+  repository and is kept anyway, because the alternative is a route importing a
+  repository and a layering rule that holds everywhere except where it was
+  inconvenient.
+
+- **No Zustand this slice — a decision, not an oversight.** The list of uploads is
+  one page's state with one consumer, and React Query already owns the per-row
+  server state. Zustand stays in the stack for state genuinely shared across
+  routes. The list is also session-scoped on purpose: it records what *this* visit
+  uploaded. A page listing every document belongs to a later phase, and
+  pretending this is one would make a reload look like data loss.
+
 **Build order**
 
-Three slices, ordered so that each one's failure mode is distinguishable from the
+Four slices, ordered so that each one's failure mode is distinguishable from the
 previous one's. Building the worker and the endpoint together and finding a
 document stuck tells you nothing about whether the lifecycle logic or the queue
 wiring is at fault.
@@ -631,7 +692,8 @@ wiring is at fault.
 3. ~~**arq worker + `POST /documents` + `GET /documents/{id}/status`.**~~
    **Done.** Demonstrable with curl and no frontend, which is where the
    concurrent-upload and killed-worker criteria got tested. Findings above.
-4. **`features/upload/`** — drag-drop plus polling progress.
+4. ~~**`features/upload/`**~~ **Done.** Drag-drop plus polling progress, and
+   `GET /courses` so the page can name what it is uploading into. Findings above.
 
 Slice 1 is also where `tests/` gets database fixtures, so Phase 1's outstanding
 re-ingest test lands with it — that is the amortisation condition Phase 1 set for
@@ -639,12 +701,23 @@ it, rather than paying the fixture cost for a single test.
 
 **Done when**
 - Uploading through the UI produces a document that reaches `ready` without any
-  manual step. — *HTTP half proved in slice 3: `POST /documents` to `ready` with
-  9/9 chunks embedded, 5.2s wall clock, no manual step. The UI is slice 4.*
+  manual step. — **Met.** Driven in a real headless Chrome over CDP, with
+  `DOM.setFileInputFiles` handing the hidden input actual PDFs, so the path
+  exercised is the page's own: `Queued` → `Embedding — 0 of 9` → `Ready — 9
+  chunks` in 3.5s, no console errors, no manual step.
 - A deliberately corrupt PDF ends `failed` with a readable error in
   `processing_runs`, and the API says so. — **Met.**
 - Two documents uploaded at once both complete. — **Met.** Two concurrent
-  uploads, distinct document rows, both `ready` at 9/9.
+  uploads, distinct document rows, both `ready` at 9/9. Re-proved through the UI
+  in slice 4: two files dropped together, both rows `Ready — 9 chunks` at t+3.5s.
+
+Every state the row can render was checked against a real browser, the fast ones
+by constructing them in the database while the page polled: `Queued`;
+`Extracting text` with no bar; `Embedding — 3 of 9` with the bar measured at
+33.3333%; `Ready — 9 chunks`; `Failed` with the backend's error verbatim
+(`could not read … No /Root object!`); the 409 refusal as a separate red row; and
+the amber stale note, forced by backdating a `running` run past
+`stale_run_after_seconds`. No percentage appeared in any label.
 - The worker survives a restart mid-job without losing the document. — **Met.**
   Hard-killed mid-run (document `pending`, run 1 `running`, 0 chunks), restarted,
   re-claimed after 25.18s as attempt 2, `ready` at 9/9. See the stale-threshold

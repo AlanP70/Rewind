@@ -98,6 +98,17 @@ async def create_course(
     )
 
 
+async def list_courses(session: AsyncSession, *, user_id: uuid.UUID) -> list[Course]:
+    """Every course this user owns.
+
+    A pass-through to the repository, and kept anyway: `api/` reaches
+    `repositories/` only through `services/`, so the alternative is a route that
+    imports a repository and a layering rule that holds everywhere except the one
+    place it was inconvenient. The cost is three lines.
+    """
+    return await courses_repo.list_for_user(session, user_id)
+
+
 async def resolve_document(
     session: AsyncSession,
     *,

@@ -86,7 +86,7 @@ npm run dev
 ```
 
 **5. Open http://localhost:3000.** You should see `status ok`, `db ok`,
-`redis ok`.
+`redis ok`. `/upload` is the upload page — see below.
 
 ## Verifying it works
 
@@ -118,14 +118,32 @@ which discards dead connections instead of handing them out.
 
 ## Uploading a document
 
-There is no upload UI yet — that is the next slice. Two routes, and curl is
-enough. You need a course first:
+Either through the UI at <http://localhost:3000/upload> — drop one or more PDFs
+and watch each row report itself — or with curl. Both need a course first, and
+courses are only created from the CLI, because term bounds are real data and
+belong somewhere they are entered deliberately:
 
 ```bash
 cd backend
 uv run python -m app.cli create-course "Algorithms" \
   --starts-on 2024-09-01 --ends-on 2024-12-15
 ```
+
+The upload page lists courses from `GET /courses`, most recent term first, and
+preselects the first. With no courses it says so rather than showing an empty
+picker.
+
+**What the rows show, and what they deliberately do not.** A row reads `Queued`,
+then `Extracting text`, then `Embedding — 3 of 9`, then `Ready — 9 chunks`. There
+is no percentage during extraction and no bar, because until chunking finishes
+there are no chunks to count and any number there would be invented. The bar
+appears only alongside the embedding counts, where it is `chunks_embedded /
+chunks_total` and nothing else. A document whose worker has gone away also shows
+an amber note naming the attempt — see `stale` below.
+
+A refused upload (a duplicate, an unknown course) appears as a separate red row
+carrying the server's reason: nothing was enqueued, so there is no document to
+watch. The list covers the current visit only; it is not a library view.
 
 ```bash
 curl -X POST http://localhost:8000/documents \

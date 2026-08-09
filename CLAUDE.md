@@ -89,14 +89,20 @@ persistence** (see ROADMAP's deferred section), so Redis cannot be the record of
 truth for outstanding work — Postgres is, and Redis is only the dispatch
 mechanism.
 
-Slices 1, 2 and 3 are done; only slice 4 (`features/upload/`) remains. Slice 3
-landed the arq worker, `POST /documents` and `GET /documents/{id}/status`. Three
-of the four done-when criteria are met and verified live — corrupt PDF, two
-concurrent uploads, worker killed mid-job — and the fourth is met on the HTTP
-side, awaiting the UI. Two findings from it are load-bearing and written up in
-ROADMAP's "Settled in slice 3": **arq retries only on `Retry`, `RetryJob` and
-`CancelledError`**, so permanent is the path that returns and transient is the
-path that raises `Retry`; and **`stale_run_after_seconds` must exceed
+All four slices are done and all four done-when criteria are met and verified
+live. Slice 4 landed `features/upload/`, the `/upload` page and `GET /courses`;
+every row state was driven in a real browser, the fast ones constructed in the
+database while the page polled. Two rules from it that the code depends on and
+cannot enforce: **`Progress` is deliberately absent from `components/ui/`** —
+installing it is how a fabricated extraction percentage gets added later — and
+**`stale` renders as an addition to the stage, never a replacement**, so a
+stranded job still says which phase stranded it.
+
+Slice 3 landed the arq worker, `POST /documents` and
+`GET /documents/{id}/status`. Two findings from it are load-bearing and written
+up in ROADMAP's "Settled in slice 3": **arq retries only on `Retry`, `RetryJob`
+and `CancelledError`**, so permanent is the path that returns and transient is
+the path that raises `Retry`; and **`stale_run_after_seconds` must exceed
 `job_timeout + 10`**, because that is arq's in-progress lock and a shorter
 threshold reports `stale` on a job arq is about to re-claim.
 

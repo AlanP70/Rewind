@@ -21,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.documents import get_queue, get_session
+from app.api.deps import get_queue, get_session
 from app.core.config import settings
 from app.core.storage import LocalStorage, get_storage, storage_key
 from app.main import app

@@ -22,6 +22,20 @@ async def get(session: AsyncSession, course_id: uuid.UUID, user_id: uuid.UUID) -
     return result.scalar_one_or_none()
 
 
+async def list_for_user(session: AsyncSession, user_id: uuid.UUID) -> list[Course]:
+    """Every course this user owns, most recent term first.
+
+    Ordered by `starts_on` descending because the upload form is the only caller
+    and the course being uploaded to is almost always the current one. No
+    pagination: a student has tens of courses, not thousands, and a limit nobody
+    can page past is worse than no limit at all.
+    """
+    result = await session.execute(
+        select(Course).where(Course.user_id == user_id).order_by(Course.starts_on.desc())
+    )
+    return list(result.scalars().all())
+
+
 async def create(
     session: AsyncSession,
     *,

@@ -9,10 +9,10 @@ import uuid
 from typing import Annotated
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import async_session
+from app.api.deps import get_queue, get_session
 from app.models.user import SEED_USER_ID
 from app.schemas.documents import DocumentAccepted, DocumentProgress
 from app.services.errors import ConflictError, NotFoundError, ServiceError
@@ -39,16 +39,6 @@ def _as_http(error: ServiceError) -> HTTPException:
         status_code=_STATUS_FOR.get(type(error), status.HTTP_400_BAD_REQUEST),
         detail=str(error),
     )
-
-
-async def get_session() -> AsyncSession:
-    async with async_session() as session:
-        yield session
-
-
-def get_queue(request: Request) -> ArqRedis:
-    """The pool opened in the app's lifespan. See `core/queue.py`."""
-    return request.app.state.queue
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
