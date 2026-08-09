@@ -9,10 +9,11 @@ and passage in the source.
 - **`ROADMAP.md`** — the phase plan and the constraints settled per phase.
 - **`CLAUDE.md`** — the invariants that are not up for renegotiation.
 
-**Current phase: 0 — an empty app deployed end to end.** There is no product
-yet. What runs is two health routes, one migration, and one page that displays
-the result. That is the whole point: the deployment is debugged while there is
-nothing else that could be broken.
+**Current phase: 3 — dating.** What works today: a PDF uploaded through the page
+or the API is queued, picked up by a worker, split into chunks that record their
+exact page and character offsets, embedded, and reported on while it happens.
+Phases 0 through 2 are closed and tagged. There is still no search and no concept
+extraction — asking *"where did I first learn recursion?"* is Phase 4's job.
 
 ## Prerequisites
 
@@ -240,6 +241,35 @@ and not one now.
 
 `backend/.env` is gitignored. Keep the connection string out of shell history
 and out of commits.
+
+## Deploying
+
+`render.yaml` at the repo root is the deploy topology: a `rewind-api` web service
+and a `rewind-worker` background worker, built from the same
+`backend/Dockerfile` and differing only in entrypoint — `start.sh` migrates and
+serves, `start-worker.sh` runs arq. Frontend is Vercel and is not described there.
+
+**Two services, not one, and this is the part that was missed once already.** The
+API only enqueues. Without the worker, uploads are accepted, return a document
+id, and are never processed — every document sits at `pending` and nothing says
+why. If the deployed app takes uploads that never finish, check that the worker
+service exists and is running before looking anywhere else.
+
+Read the comment block at the top of `render.yaml` before the first apply. Three
+things there will otherwise cost an afternoon: `region` must match the existing
+Key Value instance (the internal Redis URL resolves in one region only, and
+across regions it fails as `gaierror` on a hostname that looks correct);
+Blueprints do not adopt services created by hand in the dashboard, so applying it
+next to a hand-made service produces a duplicate; and a background worker is not
+available on Render's free instance type, so the queue running at all costs a
+Starter plan.
+
+Environment lives in the `rewind-shared` env var group, which both services read.
+That is deliberate rather than tidy: if the API were on `STORAGE_BACKEND=supabase`
+and the worker on `local`, both would start and look healthy, and every job would
+fail trying to open a file on a disk the uploader never wrote to.
+
+Only the API runs migrations. `start-worker.sh` explains why the worker must not.
 
 ## Layout
 

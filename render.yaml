@@ -1,0 +1,107 @@
+# Render Blueprint — the deploy topology, in the repo instead of in a dashboard.
+#
+# Phase 2 split the backend into two processes: the API accepts an upload and
+# enqueues it, and an arq worker does the work. Only the API was ever created on
+# Render, so the deployed app accepted uploads that nothing then ran — they sat at
+# `pending` forever. Nothing recorded that the second service was owed, which is
+# the same failure this file exists to prevent for everything below it.
+#
+# CHECK THREE THINGS BEFORE THE FIRST APPLY:
+#
+# 1. `region` must equal the region of the existing Key Value instance. The
+#    internal Redis URL resolves only inside one region — across regions it fails
+#    with `gaierror` on a hostname that is otherwise perfectly correct, so it
+#    reads as a bad REDIS_URL rather than as a topology mistake. Region is fixed
+#    at creation, so getting it wrong means recreating the instance. `oregon`
+#    below is Render's default and therefore an assumption, not a verified fact.
+#
+# 2. A blueprint does not adopt services that were created by hand in the
+#    dashboard; it creates its own alongside them. The Phase 0 web service was
+#    created by hand, so applying this unchanged produces a second API. Either
+#    delete the hand-made service first and let the blueprint own both, or create
+#    only the worker by hand and treat this file as documentation. The first is
+#    what makes this file load-bearing rather than decorative.
+#
+# 3. `type: worker` is not offered on Render's free instance type. `plan: starter`
+#    below bills monthly. That is the actual cost of the queue running at all, and
+#    it is stated here rather than discovered on an invoice.
+#
+# The Key Value instance is deliberately NOT declared. It already exists, and a
+# blueprint entry for it would provision a second one rather than adopt it —
+# leaving REDIS_URL pointing at an empty Redis while the real queue sat elsewhere.
+# It is supplied as a value instead; see the note on REDIS_URL below.
+
+services:
+  - type: web
+    name: rewind-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # No dockerCommand: the Dockerfile's CMD is start.sh, which migrates and then
+    # execs uvicorn. Render's Docker Command field cannot be trusted to parse a
+    # compound command, so the script has to win — leaving this unset is how.
+    #
+    # This is the only service that migrates. See start-worker.sh for why the
+    # worker must not.
+    healthCheckPath: /health/ready
+    envVars:
+      - fromGroup: rewind-shared
+      # Web-only: the worker serves no HTTP and has a usable default. Set to the
+      # Vercel origin, comma-separated.
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: worker
+    name: rewind-worker
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # Same image as the API, different entrypoint. A worker has no port and no
+    # health check — Render considers it up if the process is running, which is
+    # why `stale` on the status endpoint is the only real signal that the queue
+    # has stopped draining.
+    dockerCommand: /app/start-worker.sh
+    envVars:
+      - fromGroup: rewind-shared
+
+# One group rather than two envVars blocks, because the failure mode of the two
+# services disagreeing is silent. An API on `supabase` and a worker on `local`
+# both start, both look healthy, and every job fails at "file not found" against a
+# disk the uploader never wrote to. Shared config that must not drift belongs in
+# one place that both read.
+envVarGroups:
+  - name: rewind-shared
+    envVars:
+      # `sync: false` means Render prompts once and then keeps the dashboard
+      # value — the blueprint records that the variable is required without
+      # putting the secret in git.
+      - key: DATABASE_URL
+        sync: false
+      - key: ALEMBIC_DATABASE_URL
+        sync: false
+
+      # From the Key Value instance's *Internal* URL: `redis://red-xxxxxxxx:6379`,
+      # no password, same region as both services above. The external URL is
+      # `rediss://` with a password over the public internet — TLS and egress on
+      # every call for a connection that never needs to leave Render's network.
+      - key: REDIS_URL
+        sync: false
+
+      - key: OPENAI_API_KEY
+        sync: false
+
+      # Not `local`. The two services have no shared disk, so a local path would
+      # work on no machine but the developer's: the API would write bytes the
+      # worker could never open.
+      - key: STORAGE_BACKEND
+        value: supabase
+      - key: STORAGE_BUCKET
+        value: documents
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false

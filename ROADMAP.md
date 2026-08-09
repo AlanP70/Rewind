@@ -754,6 +754,89 @@ The browser was driven over CDP (`--remote-debugging-port`), with
 `DOM.setFileInputFiles` handing the real hidden input real PDFs, so what ran was
 the page's own path rather than a simulation of it.
 
+**Corrected after the phase closed** (2026-08-09)
+
+Two gaps, both found by asking whether `main` was actually deployable and then
+reading the code instead of this document. Neither was a decision anyone made;
+both were things this file already asserted as settled and nothing implemented.
+
+- **Gap 1 — the worker had no deployed service.** Phase 2's plan listed "a second
+  service for the worker on Render" and it was never created; only the Phase 0
+  web service existed. The deployed app therefore accepted uploads, returned a
+  document id, and ran nothing — every document sat at `pending` forever, which
+  is the exact silent failure the constraint at the top of this phase was written
+  to eliminate, reintroduced by the deploy rather than by the code.
+
+  Fixed by `render.yaml` at the repo root declaring both services from the one
+  image, plus `backend/start-worker.sh` as the worker entrypoint. In the repo
+  rather than the dashboard because dashboard-only config is what cost time in
+  Phase 0: the same-region Key Value rule existed nowhere until it broke. Three
+  things the file records that were otherwise tribal knowledge: **`type: worker`
+  is not available on Render's free instance type**, so the queue running at all
+  costs a Starter plan; **a blueprint does not adopt dashboard-created services**,
+  so applying it unchanged produces a second API next to the hand-made one; and
+  the Key Value instance is deliberately *not* declared, because a blueprint entry
+  would provision a second empty Redis while the real queue sat elsewhere.
+
+  The two services share one env var group rather than two `envVars` blocks,
+  because the drift failure is silent: an API on `supabase` and a worker on
+  `local` both start healthy and every job fails against a disk the uploader
+  never wrote to. Only the API migrates — see `start-worker.sh` for why two
+  concurrent `alembic upgrade head` runs are worse than a worker that starts
+  against a stale schema and is restarted.
+
+- **Gap 2 — `submit_document` never wrote the `queued` run row.** This is the
+  first constraint listed under this phase, quoted there as "writes the
+  `documents` row *and* a `processing_runs` row at `queued`, commits, and
+  enqueues only then". It did not. It uploaded, committed the document, enqueued,
+  and returned; the first `processing_runs` row was inserted by the *worker*, at
+  `running`. So the entire mechanism that makes Redis disposable was absent: a
+  dropped job left a document at `pending` with no run at all — indistinguishable
+  from one uploaded a second ago, and unreachable by `stale`, which only measured
+  from `started_at` and so could never fire on work no worker had touched.
+
+  The fix is four changes and one new query. `submit_document` opens the run at
+  `queued` before its commit. `process_document` calls a new
+  `processing_runs.claim_queued`, moving that row `queued` → `running` rather than
+  inserting a second one beside it — inserting would both double-count the attempt
+  and strand the queued row as permanently outstanding work that had in fact been
+  done. It returns `None` for the two paths that legitimately have nothing to
+  claim (the CLI, and a retry whose queued row the previous attempt already
+  closed), and the caller opens a fresh run at `running` in that case. A failed
+  `enqueue_job` now closes the run through `mark_failed`, since an undispatched
+  job is not owed work. And `document_progress` measures a `queued` run's silence
+  from `created_at`, because `started_at` is null by CHECK constraint — without
+  that, the lost-job case the row exists to expose would read `stale: false`
+  forever.
+
+  One constraint interaction worth keeping: `ck_processing_runs_started_at_matches_status`
+  reads a null `started_at` as "still queued", so closing a run that never started
+  was impossible until `mark_failed` began filling it with
+  `COALESCE(started_at, now())` — coalesce rather than an unconditional `now()`,
+  so a run that did start keeps the time it really started.
+
+  Verified live against the production shape rather than only in tests: with the
+  API up and **no worker running at all**, an upload answered
+  `attempts: 1, run_status: "queued"` where it had previously answered
+  `null, null`; backdating that row past `stale_run_after_seconds` flipped
+  `stale` to `true`; and starting a worker drained it to a single row reading
+  `attempts 1, succeeded` — not two. Suite is 53 tests, three of them new. The
+  rewritten one is the tell: `test_status_before_a_worker_has_touched_it`
+  previously asserted the run fields were **null** at that point, which encoded
+  the bug as the requirement.
+
+**The meta-observation, which is the durable part.** This is the second time a
+claim in this file turned out to be intent rather than implementation. The first
+was arq's retry semantics — recorded as settled, acted on, and only later checked
+against arq's source. Both propagated into code confidently *because* the
+surrounding prose read as decided fact, and prose does not distinguish "we
+concluded this" from "we built this". The lesson is not to write less down; it is
+that a settled decision and a verified behaviour are different claims, and the
+ones with consequences are worth stating in a form that can fail — a test, or an
+observation with a number in it. Where that is not possible, the "Verified live"
+paragraphs above are the fallback: say what was run and what came back, so a
+later reader can tell what was checked from what was merely agreed.
+
 ---
 
 ## Phase 3 — Dating

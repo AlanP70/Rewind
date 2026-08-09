@@ -88,6 +88,17 @@ Two items are explicitly carried into this phase by ROADMAP: `documents` has no
 test runner, so if Phase 3's dating UI justifies one, the `describe()` assertions
 in Phase 2's outstanding-gaps item land in the same slice.
 
+**Two Phase 2 gaps were fixed after it closed, on 2026-08-09** — see ROADMAP's
+"Corrected after the phase closed". The worker had no Render service, so the
+deployed app accepted uploads and ran nothing; `render.yaml` now declares both
+services. And `submit_document` never wrote the `queued` `processing_runs` row
+that this phase's first constraint says it writes, so a dropped job left no trace
+at all; it does now, and `process_document` claims that row rather than opening a
+second one. **Both were recorded here and in ROADMAP as settled fact before they
+were built.** Treat a prose claim about behaviour as a hypothesis until the code
+says the same thing — this was the second occurrence, after arq's retry
+semantics.
+
 Phase 2 is closed, tagged `phase-2-complete`. The queue works end to end: a
 corrupt PDF fails readably, two concurrent uploads both finish, and a worker
 killed mid-job re-claims its document. Redis is only dispatch — Postgres is the
