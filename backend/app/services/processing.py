@@ -86,7 +86,7 @@ async def submit_document(
     `process_document` does the work. They are separate because the caller here
     is an HTTP request that must answer in milliseconds.
 
-    The order of the four steps is the whole design, and each boundary is chosen:
+    The order of the five steps is the whole design, and each boundary is chosen:
 
     1. **Resolve first, before uploading a single byte.** Preconditions -- unknown
        course, chunks present without `force` -- are complaints about the request,
@@ -98,15 +98,20 @@ async def submit_document(
        rejected upload cannot strand an object nobody will ever ask for. The CLI
        uploads before it resolves and can leave one behind; it has no separate
        resolve step to put first, and the API does.
-    3. **Commit.** The row and the object become visible together.
-    4. **Enqueue**, last, because a job whose document is not yet committed can be
+    3. **Open the run at `queued`**, so the obligation is durable before anything
+       depends on Redis to remember it.
+    4. **Commit.** The row, the run and the object become visible together.
+    5. **Enqueue**, last, because a job whose document is not yet committed can be
        picked up by a worker that cannot see it.
 
-    If the enqueue itself fails, the caller gets a 5xx and the document sits at
-    `pending` with its bytes already stored -- so re-uploading resolves to the
-    same row, finds no chunks, and enqueues again. That is the intended repair,
-    and it works because Postgres holds the intent and Redis only carries the
-    request.
+    If the enqueue itself fails the queued run is closed as `failed` before the
+    5xx goes out, because a run row means "this work is owed" and after a failed
+    dispatch it is not -- nothing is coming to claim it. Leaving it open would
+    make the repair, re-uploading, produce a second queued row while the first sat
+    there permanently outstanding. The document stays `pending` with its bytes
+    stored, so re-uploading resolves to the same row, finds no chunks, opens a new
+    attempt and enqueues again. That works because Postgres holds the intent and
+    Redis only carries the request.
     """
     storage_key = build_storage_key(user_id, filename)
 
@@ -121,27 +126,58 @@ async def submit_document(
     )
 
     await get_storage().upload(storage_key, data)
+
+    # The run row is written here, at `queued`, and this is the mechanism that
+    # makes Redis disposable rather than load-bearing. If the queue drops the job
+    # -- Render's free Key Value tier has no persistence, so this is a question of
+    # when -- the row stays at `queued` and the work is *visible as outstanding*.
+    # Without it the only trace of a lost job is a document at `pending` with no
+    # run at all, which is indistinguishable from one uploaded a second ago, and
+    # that silence is the failure mode the table exists to prevent.
+    attempts = await runs_repo.next_attempt_number(session, resolved.document.id)
+    run = await runs_repo.create(
+        session,
+        user_id=user_id,
+        document_id=resolved.document.id,
+        attempts=attempts,
+        status=RunStatus.QUEUED,
+    )
+    run_id = run.id
+
     await session.commit()
 
-    job = await queue.enqueue_job(
-        "process_document_task",
-        user_id=str(user_id),
-        course_id=str(course_id),
-        storage_key=storage_key,
-        kind=kind,
-        title=title,
-        embed=embed,
-    )
-    # arq returns None when a job with the same id already exists. Nothing here
-    # sets a job id, so ids are generated and this cannot happen -- but the type
-    # is optional, and asserting it would crash the request rather than explain.
-    #
-    # Not a `ServiceError`: those are things the caller can fix, which is what
-    # lets the route map every one of them to a 4xx. This is the server failing,
-    # so it must become a 500 -- and the repair is re-uploading, which resolves to
-    # the same row and enqueues again.
-    if job is None:
-        raise RuntimeError(f"could not enqueue {storage_key}; it may already be queued")
+    # Both failure shapes are caught: `enqueue_job` returns None when a job with
+    # the same id already exists, and raises when Redis is simply unreachable --
+    # which is the likelier one, and the one that used to leave the run open.
+    try:
+        job = await queue.enqueue_job(
+            "process_document_task",
+            user_id=str(user_id),
+            course_id=str(course_id),
+            storage_key=storage_key,
+            kind=kind,
+            title=title,
+            embed=embed,
+        )
+        # arq returns None when a job with the same id already exists. Nothing
+        # here sets a job id, so ids are generated and this cannot happen -- but
+        # the type is optional, and asserting it would crash the request rather
+        # than explain.
+        if job is None:
+            raise RuntimeError(
+                f"could not enqueue {storage_key}; it may already be queued"
+            )
+    except Exception as error:
+        # Close the run before answering. See the docstring: an unenqueued job is
+        # not owed work, and leaving the row at `queued` would report it as
+        # outstanding forever while the retry opened a second one beside it.
+        await runs_repo.mark_failed(session, run_id, f"could not enqueue: {error}")
+        await session.commit()
+        # Not a `ServiceError`: those are things the caller can fix, which is what
+        # lets the route map every one of them to a 4xx. This is the server
+        # failing, so it must become a 500 -- and the repair is re-uploading,
+        # which resolves to the same row and opens a fresh attempt.
+        raise
 
     logger.info(
         "queued %s as document %s (job %s)", storage_key, resolved.document.id, job.job_id
@@ -184,14 +220,25 @@ async def process_document(
     # guaranteed to exist even if the attempt dies immediately.
     await session.commit()
 
-    attempts = await runs_repo.next_attempt_number(session, document_id)
-    run = await runs_repo.create(
-        session,
-        user_id=user_id,
-        document_id=document_id,
-        attempts=attempts,
-        status=RunStatus.RUNNING,
-    )
+    # Claim the row `submit_document` left at `queued`, rather than opening a
+    # second one beside it. An enqueued document already has a run recording that
+    # the work is owed; inserting another would both double-count the attempt --
+    # the upload would be attempt 1 and its own execution attempt 2 -- and strand
+    # the queued row as permanently outstanding work that had in fact been done.
+    #
+    # None means nothing was queued: the CLI, which does the work itself, and a
+    # retry whose queued row this task already claimed and closed. Both open a
+    # fresh run at `running`.
+    run = await runs_repo.claim_queued(session, document_id)
+    if run is None:
+        run = await runs_repo.create(
+            session,
+            user_id=user_id,
+            document_id=document_id,
+            attempts=await runs_repo.next_attempt_number(session, document_id),
+            status=RunStatus.RUNNING,
+        )
+    attempts = run.attempts
     run_id = run.id
     await session.commit()
 
@@ -265,10 +312,25 @@ async def document_progress(
     unembedded = await chunks_repo.count_unembedded(session, document_id)
     run = await runs_repo.latest_for_document(session, document_id)
 
-    stale = False
-    if run is not None and run.status == RunStatus.RUNNING and run.started_at is not None:
-        age = datetime.now(UTC) - run.started_at
-        stale = age.total_seconds() > settings.stale_run_after_seconds
+    # Two ways a run goes quiet, and both have to count or the flag misses the
+    # case it was written for. A `running` run means a worker took the job and
+    # stopped reporting -- measured from `started_at`. A `queued` run means no
+    # worker ever took it, which is what a dropped Redis looks like from here;
+    # `started_at` is null by CHECK constraint, so the clock runs from
+    # `created_at`. Covering only the first would leave the lost-job case -- the
+    # one the queued row exists to make visible -- reading `stale: false` forever.
+    reference = None
+    if run is not None:
+        if run.status == RunStatus.RUNNING:
+            reference = run.started_at
+        elif run.status == RunStatus.QUEUED:
+            reference = run.created_at
+
+    stale = (
+        reference is not None
+        and (datetime.now(UTC) - reference).total_seconds()
+        > settings.stale_run_after_seconds
+    )
 
     return DocumentProgress(
         document_id=document_id,

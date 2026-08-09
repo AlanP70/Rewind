@@ -55,6 +55,15 @@ class FakeQueue:
         return FakeJob(f"job-{len(self.jobs)}")
 
 
+class BrokenQueue:
+    """Redis unreachable. Raises rather than returning None, because that is what
+    an actual dead connection does -- returning None is arq's "duplicate job id",
+    a different and much rarer thing."""
+
+    async def enqueue_job(self, function: str, **kwargs) -> FakeJob:
+        raise ConnectionError("Error 111 connecting to redis:6379. Connection refused.")
+
+
 @pytest.fixture
 def queue() -> FakeQueue:
     return FakeQueue()
@@ -212,8 +221,13 @@ async def test_force_re_upload_reuses_the_same_document(
 async def test_status_before_a_worker_has_touched_it(
     client: AsyncClient, course_id: uuid.UUID
 ) -> None:
-    """Queued but not picked up: no run exists yet, so the run fields are null
-    rather than zeroed. A zero would claim an attempt had been made."""
+    """Queued but not picked up: the run exists and says `queued`.
+
+    This test previously asserted the run fields were *null* here, which encoded
+    the bug rather than the requirement -- the document was accepted with no
+    record that any work was owed. The upload now opens the run before it answers,
+    so a job Redis loses is still visible as an outstanding attempt.
+    """
     document_id = (await client.post("/documents", **_upload_form(course_id))).json()[
         "document_id"
     ]
@@ -223,10 +237,89 @@ async def test_status_before_a_worker_has_touched_it(
     assert body["status"] == DocumentStatus.PENDING
     assert body["chunks_total"] == 0
     assert body["chunks_embedded"] == 0
-    assert body["attempts"] is None
-    assert body["run_status"] is None
+    assert body["attempts"] == 1
+    assert body["run_status"] == RunStatus.QUEUED
     assert body["error"] is None
+    # Only just enqueued, so not yet suspicious.
     assert body["stale"] is False
+
+
+async def test_a_lost_job_is_visible_as_an_outstanding_queued_run(
+    client: AsyncClient, session: AsyncSession, course_id: uuid.UUID
+) -> None:
+    """The whole reason the queued row exists.
+
+    Simulates Redis dropping the job -- the run is never claimed -- by backdating
+    it past the threshold. Before this fix the same situation reported `pending`
+    with every run field null and `stale: false`, which is indistinguishable from
+    a document uploaded a second ago. That silence is what the free Key Value
+    tier's lack of persistence would have produced in production.
+    """
+    document_id = uuid.UUID(
+        (await client.post("/documents", **_upload_form(course_id))).json()["document_id"]
+    )
+
+    forgotten = datetime.now(UTC) - timedelta(
+        seconds=settings.stale_run_after_seconds + 60
+    )
+    await session.execute(
+        update(ProcessingRun)
+        .where(ProcessingRun.document_id == document_id)
+        .values(created_at=forgotten)
+    )
+    await session.commit()
+
+    body = (await client.get(f"/documents/{document_id}/status")).json()
+
+    assert body["run_status"] == RunStatus.QUEUED
+    assert body["stale"] is True
+    assert body["attempts"] == 1
+
+
+async def test_processing_claims_the_queued_run_instead_of_opening_another(
+    client: AsyncClient, session: AsyncSession, course_id: uuid.UUID
+) -> None:
+    """One upload is one attempt, however many rows it took to get there.
+
+    If the worker opened its own run the upload would be attempt 1 and its
+    execution attempt 2, and the queued row would sit there forever claiming work
+    was still owed on a document that had finished.
+    """
+    document_id = uuid.UUID(
+        (await client.post("/documents", **_upload_form(course_id))).json()["document_id"]
+    )
+
+    await _process(session, course_id, storage_key(SEED_USER_ID, "Lecture.pdf"))
+
+    runs = await runs_repo.list_for_document(session, document_id)
+    assert [(run.attempts, run.status) for run in runs] == [
+        (1, RunStatus.SUCCEEDED)
+    ]
+    assert runs[0].started_at is not None
+
+
+async def test_a_failed_enqueue_closes_the_run_rather_than_leaving_it_owed(
+    client: AsyncClient, session: AsyncSession, queue: FakeQueue, course_id: uuid.UUID
+) -> None:
+    """A dispatch that never happened is not outstanding work.
+
+    Left at `queued` it would read as a job in flight forever, and the repair --
+    re-uploading -- would open a second queued row beside the first.
+    """
+    app.dependency_overrides[get_queue] = lambda: BrokenQueue()
+    try:
+        with pytest.raises(ConnectionError):
+            await client.post("/documents", **_upload_form(course_id))
+    finally:
+        app.dependency_overrides[get_queue] = lambda: queue
+
+    document = await documents_repo.get_by_storage_key(
+        session, SEED_USER_ID, storage_key(SEED_USER_ID, "Lecture.pdf")
+    )
+    assert document is not None
+    runs = await runs_repo.list_for_document(session, document.id)
+    assert [run.status for run in runs] == [RunStatus.FAILED]
+    assert "could not enqueue" in runs[0].error
 
 
 async def test_status_reports_honest_counts_after_chunking(
@@ -298,13 +391,10 @@ async def test_a_running_run_past_the_threshold_is_stale(
     document_id = uuid.UUID(
         (await client.post("/documents", **_upload_form(course_id))).json()["document_id"]
     )
-    run = await runs_repo.create(
-        session,
-        user_id=SEED_USER_ID,
-        document_id=document_id,
-        attempts=1,
-        status=RunStatus.RUNNING,
-    )
+    # Claimed rather than inserted: the upload already opened attempt 1 at
+    # `queued`, and a worker taking it is exactly how a run reaches `running`.
+    run = await runs_repo.claim_queued(session, document_id)
+    assert run is not None
     dead = datetime.now(UTC) - timedelta(seconds=settings.stale_run_after_seconds + 60)
     await session.execute(
         update(ProcessingRun).where(ProcessingRun.id == run.id).values(started_at=dead)
@@ -324,13 +414,7 @@ async def test_a_run_within_the_threshold_is_not_stale(
     document_id = uuid.UUID(
         (await client.post("/documents", **_upload_form(course_id))).json()["document_id"]
     )
-    await runs_repo.create(
-        session,
-        user_id=SEED_USER_ID,
-        document_id=document_id,
-        attempts=1,
-        status=RunStatus.RUNNING,
-    )
+    assert await runs_repo.claim_queued(session, document_id) is not None
     await session.commit()
 
     body = (await client.get(f"/documents/{document_id}/status")).json()

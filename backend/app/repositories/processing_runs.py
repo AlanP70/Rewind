@@ -83,6 +83,48 @@ async def create(
     return run
 
 
+async def claim_queued(
+    session: AsyncSession, document_id: uuid.UUID
+) -> ProcessingRun | None:
+    """Take over the run `submit_document` opened, moving it `queued` -> `running`.
+
+    Returns None when there is nothing to claim -- the CLI path, which never
+    enqueued anything, and a retry whose queued row was already claimed and
+    closed by the attempt before it. The caller opens a fresh run in that case.
+
+    Claiming rather than opening a second row is the whole point. The queued row
+    *is* the record that this work is owed; a worker that ignored it and inserted
+    its own would leave the queued one behind forever, so a document that
+    processed perfectly would still read as having outstanding work.
+
+    Oldest queued first, so two rapid force-uploads pair with their jobs in the
+    order they were made. `status = 'queued'` is repeated in the UPDATE rather
+    than trusted from the subquery: between the read and the write another worker
+    may have claimed the same row, and the second UPDATE must then match nothing
+    instead of dragging a running row back to the start.
+    """
+    oldest_queued = (
+        select(ProcessingRun.id)
+        .where(
+            ProcessingRun.document_id == document_id,
+            ProcessingRun.status == RunStatus.QUEUED,
+        )
+        .order_by(ProcessingRun.attempts)
+        .limit(1)
+        .scalar_subquery()
+    )
+    result = await session.execute(
+        update(ProcessingRun)
+        .where(
+            ProcessingRun.id == oldest_queued,
+            ProcessingRun.status == RunStatus.QUEUED,
+        )
+        .values(status=RunStatus.RUNNING, started_at=func.now())
+        .returning(ProcessingRun)
+    )
+    return result.scalars().first()
+
+
 async def mark_running(session: AsyncSession, run_id: uuid.UUID) -> None:
     await session.execute(
         update(ProcessingRun)
@@ -106,9 +148,21 @@ async def mark_failed(session: AsyncSession, run_id: uuid.UUID, error: str) -> N
     `documents.set_status` is: this runs straight after a rollback, which expires
     everything in the session, and an UPDATE does not care whether the identity
     map survived.
+
+    `started_at` is filled in if it is still null. A run failing straight from
+    `queued` -- a dispatch that never reached Redis -- has never started, but
+    `ck_processing_runs_started_at_matches_status` reads a null `started_at` as
+    "this row is still queued", so leaving it would make closing the run
+    impossible. `COALESCE` rather than an unconditional `now()` so a run that did
+    start keeps the time it really started.
     """
     await session.execute(
         update(ProcessingRun)
         .where(ProcessingRun.id == run_id)
-        .values(status=RunStatus.FAILED, finished_at=func.now(), error=error)
+        .values(
+            status=RunStatus.FAILED,
+            started_at=func.coalesce(ProcessingRun.started_at, func.now()),
+            finished_at=func.now(),
+            error=error,
+        )
     )

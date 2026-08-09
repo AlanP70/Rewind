@@ -41,10 +41,16 @@ class DocumentProgress(BaseModel):
     chunks_total: int
     chunks_embedded: int
 
-    # From the most recent run. Null before any run has opened -- a document that
-    # is queued but not yet picked up.
+    # From the most recent run. An upload opens its run at `queued` before it
+    # answers, so these are populated from the moment `POST /documents` returns --
+    # `run_status` is `queued` until a worker claims it, not null. Null is now
+    # only reachable for a document whose row was created without ever being
+    # submitted for processing.
     attempts: int | None
     run_status: RunStatus | None
     error: str | None
 
+    # True when the latest run has gone quiet: `running` with no worker reporting,
+    # or still `queued` long after it was enqueued, which is what a dropped job
+    # looks like from here.
     stale: bool
