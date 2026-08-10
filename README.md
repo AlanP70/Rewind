@@ -244,32 +244,39 @@ and out of commits.
 
 ## Deploying
 
-`render.yaml` at the repo root is the deploy topology: a `rewind-api` web service
-and a `rewind-worker` background worker, built from the same
-`backend/Dockerfile` and differing only in entrypoint — `start.sh` migrates and
-serves, `start-worker.sh` runs arq. Frontend is Vercel and is not described there.
+`render.yaml` at the repo root is the deploy topology: one `rewind-api` web
+service built from `backend/Dockerfile`. Frontend is Vercel and is not described
+there.
 
-**Two services, not one, and this is the part that was missed once already.** The
-API only enqueues. Without the worker, uploads are accepted, return a document
-id, and are never processed — every document sits at `pending` and nothing says
-why. If the deployed app takes uploads that never finish, check that the worker
-service exists and is running before looking anywhere else.
+**One service runs two processes.** The API only enqueues; an arq worker does the
+work. The clean deploy is a separate Render background worker, but that service
+type is not offered on the free instance type, so `start.sh` runs uvicorn and arq
+side by side under a small supervisor instead. This is a cost decision, not a
+design preference — `ROADMAP.md` has the tradeoffs and what splitting them back
+out takes.
 
-Read the comment block at the top of `render.yaml` before the first apply. Three
+Two consequences worth knowing before something confuses you:
+
+- **A free instance spins down when idle, and the worker sleeps with it.**
+  Recovery is therefore not automatic: an interrupted document stays interrupted
+  until someone next uses the app and wakes the service. It is *visible* the whole
+  time — `stale` on the status route says so — but nothing re-drives it on its own.
+- **Either process dying takes the container down, on purpose.** If arq could die
+  while uvicorn kept serving, health checks would pass over a queue that silently
+  stopped draining. A restart loop is the intended alternative. No HTTP health
+  check can cover the worker, so `stale` is the only signal that it stopped.
+
+Read the comment block at the top of `render.yaml` before the first apply. Two
 things there will otherwise cost an afternoon: `region` must match the existing
 Key Value instance (the internal Redis URL resolves in one region only, and
-across regions it fails as `gaierror` on a hostname that looks correct);
+across regions it fails as `gaierror` on a hostname that looks correct); and
 Blueprints do not adopt services created by hand in the dashboard, so applying it
-next to a hand-made service produces a duplicate; and a background worker is not
-available on Render's free instance type, so the queue running at all costs a
-Starter plan.
+next to a hand-made service produces a duplicate rather than taking it over.
 
-Environment lives in the `rewind-shared` env var group, which both services read.
-That is deliberate rather than tidy: if the API were on `STORAGE_BACKEND=supabase`
-and the worker on `local`, both would start and look healthy, and every job would
-fail trying to open a file on a disk the uploader never wrote to.
-
-Only the API runs migrations. `start-worker.sh` explains why the worker must not.
+`STORAGE_BACKEND` must stay `supabase` even though one service now means one
+filesystem. Render's disks are ephemeral — every deploy replaces the container,
+and local files would go with it while the `documents` rows pointing at them
+survived.
 
 ## Layout
 

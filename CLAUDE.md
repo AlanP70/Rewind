@@ -90,8 +90,13 @@ in Phase 2's outstanding-gaps item land in the same slice.
 
 **Two Phase 2 gaps were fixed after it closed, on 2026-08-09** — see ROADMAP's
 "Corrected after the phase closed". The worker had no Render service, so the
-deployed app accepted uploads and ran nothing; `render.yaml` now declares both
-services. And `submit_document` never wrote the `queued` `processing_runs` row
+deployed app accepted uploads and ran nothing. `render.yaml` now declares the
+deploy, as **one free service running both uvicorn and arq** — a separate Render
+worker needs a paid plan. `start.sh` supervises them: it does not `exec`, because
+Docker signals PID 1 only and arq would never get SIGTERM, and it exits when
+either child exits, because a live API over a dead worker is a green dashboard
+above a queue that silently stopped draining. And `submit_document` never wrote
+the `queued` `processing_runs` row
 that this phase's first constraint says it writes, so a dropped job left no trace
 at all; it does now, and `process_document` claims that row rather than opening a
 second one. **Both were recorded here and in ROADMAP as settled fact before they

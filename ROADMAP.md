@@ -767,23 +767,63 @@ both were things this file already asserted as settled and nothing implemented.
   is the exact silent failure the constraint at the top of this phase was written
   to eliminate, reintroduced by the deploy rather than by the code.
 
-  Fixed by `render.yaml` at the repo root declaring both services from the one
-  image, plus `backend/start-worker.sh` as the worker entrypoint. In the repo
-  rather than the dashboard because dashboard-only config is what cost time in
-  Phase 0: the same-region Key Value rule existed nowhere until it broke. Three
-  things the file records that were otherwise tribal knowledge: **`type: worker`
-  is not available on Render's free instance type**, so the queue running at all
-  costs a Starter plan; **a blueprint does not adopt dashboard-created services**,
-  so applying it unchanged produces a second API next to the hand-made one; and
-  the Key Value instance is deliberately *not* declared, because a blueprint entry
-  would provision a second empty Redis while the real queue sat elsewhere.
+  Fixed by `render.yaml` at the repo root, in the repo rather than the dashboard
+  because dashboard-only config is what cost time in Phase 0: the same-region Key
+  Value rule existed nowhere until it broke. Two things the file records that were
+  otherwise tribal knowledge: **a blueprint does not adopt dashboard-created
+  services**, so applying it unchanged produces a second API next to the hand-made
+  one, and deleting the hand-made one changes the `onrender.com` hostname that
+  Vercel baked into `NEXT_PUBLIC_API_URL` at build time; and the Key Value
+  instance is deliberately *not* declared, because a blueprint entry would
+  provision a second empty Redis while the real queue sat elsewhere.
 
-  The two services share one env var group rather than two `envVars` blocks,
-  because the drift failure is silent: an API on `supabase` and a worker on
-  `local` both start healthy and every job fails against a disk the uploader
-  never wrote to. Only the API migrates — see `start-worker.sh` for why two
-  concurrent `alembic upgrade head` runs are worse than a worker that starts
-  against a stale schema and is restarted.
+  **One service runs both processes, not two.** The obvious shape is a `web` and a
+  `worker`, and it was written that way first — then discarded, because
+  **`type: worker` is not offered on Render's free instance type** and the Starter
+  plan it requires is not worth $7/month for a project with no users. `start.sh`
+  runs uvicorn and arq side by side instead. What that costs, accepted knowingly:
+
+  - The worker sleeps when the free instance spins down, so **recovery stops being
+    automatic**. A stranded run needs a live worker to re-claim it and there is no
+    worker while the service is asleep, so it waits for the next visitor. Gap 2's
+    `queued` row and `stale` are what keep that visible rather than silent, which
+    is what makes it survivable at all.
+  - Both processes share 512MB. **This is the risk most likely to actually bite** —
+    uvicorn, arq, pypdf holding a large PDF and embedding batches in one cgroup,
+    where an OOM kill on a big upload now takes the API down with it.
+  - Either process dying takes the container down. Deliberate; see below.
+
+  Two things about the supervisor are load-bearing and neither is obvious.
+  **`start.sh` no longer `exec`s**, reversing what its own comment used to say.
+  That comment was right that a shell at PID 1 swallows SIGTERM, but the cause is
+  having no handler, not being a shell: Docker signals PID 1 and nothing else, so
+  `arq &` followed by `exec uvicorn` leaves arq unsignalled and hard-killed on
+  every deploy and every spin-down. Trapping and forwarding is the only way arq
+  gets to finish its in-flight job. **And the supervisor exits when *either* child
+  exits**, rather than waiting for both. If arq dies alone, uvicorn keeps serving,
+  `/health/ready` passes, the dashboard is green, and uploads are accepted and
+  never processed — this gap's exact failure mode, reintroduced in a shape nothing
+  can observe. Exiting non-zero converts that into a restart loop, which is noisy
+  and visible. No HTTP health check can cover the worker; `stale` on the document
+  status endpoint remains the only signal that the queue stopped draining.
+
+  **What splitting them back out takes**, if the project ever earns it: restore
+  `backend/start-worker.sh` from commit `d389630`, add a second `type: worker`
+  service to `render.yaml` pointing `dockerCommand` at it, and move the shared
+  env vars into an `envVarGroup` both services read — the drift failure there is
+  silent, since an API on `supabase` and a worker on `local` both start healthy
+  while every job fails against a disk the uploader never wrote to. Migration
+  ordering also becomes a live question again: only one service may run
+  `alembic upgrade head`, because Alembic holds no lock across an upgrade. That
+  script is deleted rather than kept dormant, per the no-code-for-later rule.
+
+  Verified in the built image against real Postgres and Redis, not reasoned about:
+  both processes alive under the shell at PID 1 (`/proc` listing arq at 8 and
+  uvicorn at 9) with the migration applied ahead of them; `docker stop` producing
+  `shutdown on SIGTERM ◆ 0 ongoing to cancel` from arq **and** a clean uvicorn
+  shutdown, exit 0 in 2.3s; `kill -9` on arq alone taking the container down with
+  exit 1; and an upload posted to the container processed by the worker inside it,
+  reaching `attempts 1, succeeded` with 9 chunks.
 
 - **Gap 2 — `submit_document` never wrote the `queued` run row.** This is the
   first constraint listed under this phase, quoted there as "writes the

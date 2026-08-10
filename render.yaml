@@ -1,80 +1,58 @@
 # Render Blueprint — the deploy topology, in the repo instead of in a dashboard.
 #
-# Phase 2 split the backend into two processes: the API accepts an upload and
-# enqueues it, and an arq worker does the work. Only the API was ever created on
-# Render, so the deployed app accepted uploads that nothing then ran — they sat at
-# `pending` forever. Nothing recorded that the second service was owed, which is
-# the same failure this file exists to prevent for everything below it.
+# ONE service, running two processes. Phase 2 split the backend into an API that
+# enqueues and an arq worker that does the work, and the obvious deploy is two
+# Render services. It is not what this does, because `type: worker` is not offered
+# on Render's free instance type and a second paid service is not worth it for a
+# project with no users. `backend/start.sh` runs uvicorn and arq side by side
+# under one process supervisor instead.
 #
-# CHECK THREE THINGS BEFORE THE FIRST APPLY:
+# What that costs, and what buying the split back looks like, is in ROADMAP under
+# "Corrected after the phase closed". The short version: the worker sleeps when
+# the free instance spins down, both processes share 512MB, and either one dying
+# takes the container with it — deliberately, because the alternative is a green
+# dashboard over a queue that silently stopped draining.
 #
-# 1. `region` must equal the region of the existing Key Value instance. The
-#    internal Redis URL resolves only inside one region — across regions it fails
-#    with `gaierror` on a hostname that is otherwise perfectly correct, so it
-#    reads as a bad REDIS_URL rather than as a topology mistake. Region is fixed
-#    at creation, so getting it wrong means recreating the instance. `oregon`
-#    below is Render's default and therefore an assumption, not a verified fact.
+# BEFORE THE FIRST APPLY:
 #
-# 2. A blueprint does not adopt services that were created by hand in the
-#    dashboard; it creates its own alongside them. The Phase 0 web service was
-#    created by hand, so applying this unchanged produces a second API. Either
-#    delete the hand-made service first and let the blueprint own both, or create
-#    only the worker by hand and treat this file as documentation. The first is
-#    what makes this file load-bearing rather than decorative.
-#
-# 3. `type: worker` is not offered on Render's free instance type. `plan: starter`
-#    below bills monthly. That is the actual cost of the queue running at all, and
-#    it is stated here rather than discovered on an invoice.
+# A blueprint does not adopt services created by hand in the dashboard; it creates
+# its own alongside them. The Phase 0 web service was created by hand, so it has
+# to be deleted first for this file to own the deploy — and deleting it changes
+# the service's onrender.com hostname, which the Vercel frontend has baked into
+# NEXT_PUBLIC_API_URL at build time. Copy the existing env var values out before
+# deleting; they are not recoverable afterwards.
 #
 # The Key Value instance is deliberately NOT declared. It already exists, and a
-# blueprint entry for it would provision a second one rather than adopt it —
-# leaving REDIS_URL pointing at an empty Redis while the real queue sat elsewhere.
-# It is supplied as a value instead; see the note on REDIS_URL below.
+# blueprint entry for it would provision a second empty one rather than adopt it,
+# leaving REDIS_URL pointing at an idle Redis while the real queue sat elsewhere.
 
 services:
   - type: web
     name: rewind-api
     runtime: docker
     plan: free
+    # Must match the Key Value instance's region. The internal Redis URL resolves
+    # inside one region only — across regions it fails with `gaierror` on a
+    # hostname that is otherwise perfectly correct, so it reads as a bad
+    # REDIS_URL rather than as a topology mistake. Fixed at creation, so getting
+    # it wrong means recreating the instance. Confirmed oregon, 2026-08-10.
     region: oregon
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    # No dockerCommand: the Dockerfile's CMD is start.sh, which migrates and then
-    # execs uvicorn. Render's Docker Command field cannot be trusted to parse a
-    # compound command, so the script has to win — leaving this unset is how.
-    #
-    # This is the only service that migrates. See start-worker.sh for why the
-    # worker must not.
+
+    # No dockerCommand. The Dockerfile's CMD is start.sh, and Render's Docker
+    # Command field cannot be trusted to parse a compound command — leaving this
+    # unset is how the script wins. Left commented rather than set empty — an
+    # explicit null here is a value, and the point is that there is no value.
+    # dockerCommand:
+
+    # 503 when a dependency is down, which is the whole reason the route exists:
+    # always-200 means a dead Postgres reads as a healthy deploy. Note it does not
+    # cover the worker — nothing served over HTTP can, since the worker shares
+    # this process tree but not its request path. A queue that has stopped
+    # draining shows up as `stale` on the document status endpoint, not here.
     healthCheckPath: /health/ready
-    envVars:
-      - fromGroup: rewind-shared
-      # Web-only: the worker serves no HTTP and has a usable default. Set to the
-      # Vercel origin, comma-separated.
-      - key: CORS_ORIGINS
-        sync: false
 
-  - type: worker
-    name: rewind-worker
-    runtime: docker
-    plan: starter
-    region: oregon
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    # Same image as the API, different entrypoint. A worker has no port and no
-    # health check — Render considers it up if the process is running, which is
-    # why `stale` on the status endpoint is the only real signal that the queue
-    # has stopped draining.
-    dockerCommand: /app/start-worker.sh
-    envVars:
-      - fromGroup: rewind-shared
-
-# One group rather than two envVars blocks, because the failure mode of the two
-# services disagreeing is silent. An API on `supabase` and a worker on `local`
-# both start, both look healthy, and every job fails at "file not found" against a
-# disk the uploader never wrote to. Shared config that must not drift belongs in
-# one place that both read.
-envVarGroups:
-  - name: rewind-shared
     envVars:
       # `sync: false` means Render prompts once and then keeps the dashboard
       # value — the blueprint records that the variable is required without
@@ -84,19 +62,20 @@ envVarGroups:
       - key: ALEMBIC_DATABASE_URL
         sync: false
 
-      # From the Key Value instance's *Internal* URL: `redis://red-xxxxxxxx:6379`,
-      # no password, same region as both services above. The external URL is
-      # `rediss://` with a password over the public internet — TLS and egress on
-      # every call for a connection that never needs to leave Render's network.
+      # The Key Value instance's *Internal* URL: `redis://red-xxxxxxxx:6379`, no
+      # password, same region as above. The external URL is `rediss://` with a
+      # password over the public internet — TLS and egress on every call for a
+      # connection that never needs to leave Render's network.
       - key: REDIS_URL
         sync: false
 
       - key: OPENAI_API_KEY
         sync: false
 
-      # Not `local`. The two services have no shared disk, so a local path would
-      # work on no machine but the developer's: the API would write bytes the
-      # worker could never open.
+      # Not `local`, even though one service now means one filesystem and a local
+      # path would technically work. Render's disks are ephemeral: every deploy
+      # replaces the container, and every uploaded PDF would go with it while the
+      # `documents` rows pointing at them survived.
       - key: STORAGE_BACKEND
         value: supabase
       - key: STORAGE_BUCKET
@@ -104,4 +83,8 @@ envVarGroups:
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
+        sync: false
+
+      # The Vercel origin, comma-separated.
+      - key: CORS_ORIGINS
         sync: false
