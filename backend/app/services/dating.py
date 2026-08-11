@@ -52,15 +52,25 @@ class RedateResult:
 class DatingOutcome:
     """What the filename dater decided about one document, and why.
 
-    `reason` is filled in exactly when `occurred_on` is `None`. An undated
-    document is a result this phase reports rather than an error it swallows, so
-    the reason travels with it instead of being logged and lost.
+    Three shapes, and the middle one is the point:
+
+      `occurred_on` set   -- a date was written, and `source` says how.
+      `suggestion` set    -- a date was computed and deliberately *not* written.
+                             The document is still undated. `reason` says why it
+                             was only offered.
+      neither set         -- nothing was found. `reason` says what was missing.
+
+    `reason` is filled in exactly when `occurred_on` is `None`, which covers both
+    of the latter two. An undated document is a result this phase reports rather
+    than an error it swallows, so the reason travels with it instead of being
+    logged and lost.
     """
 
     document_id: uuid.UUID
     filename: str
-    occurred_on: date | None
-    source: OccurredAtSource | None
+    occurred_on: date | None = None
+    source: OccurredAtSource | None = None
+    suggestion: date | None = None
     reason: str = ""
 
 
@@ -72,6 +82,31 @@ async def date_course_from_filenames(
     overwrite: bool = False,
 ) -> list[DatingOutcome]:
     """Date every document in a course from its filename. Reports what it could not.
+
+    **Only a date the filename states is written. An interpolated one is offered.**
+    A `filename_date` is testimony -- someone wrote `2020-02-11` in the name, and
+    it is wrong only if they were wrong. An `inferred_filename` date is arithmetic
+    on top of testimony about something else, its accuracy has never been
+    measured against real lecture dates, and it fails by *weeks* rather than days
+    with nothing in the input revealing it: interpolating across the observed
+    ordinal range places the highest lecture uploaded on the last day of term, so
+    a student who uploads 11 of 20 lectures gets lecture 11 dated in May.
+
+    So an ordinal produces a `suggestion` on the outcome and no write. Extraction
+    is reliable and ordering is reliable; the date is not, and a
+    confidently-weeks-wrong date rendered in a timeline is worse than an honest
+    blank. The candidate is still computed, so the UI can offer it for one-click
+    acceptance and so the work survives if the measurement later says it is fine.
+
+    **What would reverse this:** a measured date accuracy for
+    `inferred_filename`, on real course material whose real lecture dates are
+    known. Not a larger filename corpus -- that measures extraction, which is
+    already measured. See ROADMAP, Phase 3, slice 2.
+
+    Nothing is cached. The interpolation depends on which ordinals happen to be
+    present, so uploading one more lecture changes every suggestion in the
+    course; a stored candidate would be stale on the next upload, and recomputing
+    is correct by construction.
 
     Two passes, because they need different information. An explicit date is
     readable from one filename alone. An ordinal is not: `lecture-07.pdf` becomes
@@ -111,9 +146,9 @@ async def date_course_from_filenames(
         # StrEnum is silently always false -- which here would have meant
         # overwriting hand-set dates, the one thing this must never do.
         if document.occurred_at_source == OccurredAtSource.MANUAL:
-            outcomes.append(_skipped(document, "dated by hand"))
+            outcomes.append(_undated(document, "dated by hand"))
         elif document.occurred_at is not None and not overwrite:
-            outcomes.append(_skipped(document, "already dated"))
+            outcomes.append(_undated(document, "already dated"))
         else:
             candidates.append(document)
 
@@ -137,52 +172,68 @@ async def date_course_from_filenames(
         seen.setdefault(kind, []).append(number)
 
     for document in candidates:
-        occurred_on: date | None = None
-        source: OccurredAtSource | None = None
-        reason = "no date or lecture number in the filename"
-
         if found := explicit.get(document.id):
-            occurred_on, source = found, OccurredAtSource.FILENAME_DATE
-        elif ordinal := ordinals.get(document.id):
+            try:
+                await redate_document(
+                    session,
+                    user_id=user_id,
+                    document_id=document.id,
+                    occurred_on=found,
+                    source=OccurredAtSource.FILENAME_DATE,
+                )
+            except ServiceError as error:
+                # Out-of-term, refused by the funnel. The filename stated a date
+                # in the wrong term, which is a real thing that happens and must
+                # not take the rest of the batch down with it.
+                outcomes.append(_undated(document, str(error)))
+                continue
+
+            outcomes.append(
+                DatingOutcome(
+                    document_id=document.id,
+                    filename=_filename(document),
+                    occurred_on=found,
+                    source=OccurredAtSource.FILENAME_DATE,
+                )
+            )
+            continue
+
+        if ordinal := ordinals.get(document.id):
             kind, number = ordinal
             numbers = seen[kind]
-            occurred_on = filename_dates.interpolate(
+            suggestion = filename_dates.interpolate(
                 number,
                 lowest=min(numbers),
                 highest=max(numbers),
                 starts_on=course.starts_on,
                 ends_on=course.ends_on,
             )
-            source = OccurredAtSource.INFERRED_FILENAME
-            if occurred_on is None:
-                reason = f"only one {kind} in this course, so {kind} {number} has no range to sit in"
-
-        if occurred_on is None or source is None:
-            outcomes.append(_skipped(document, reason))
+            if suggestion is None:
+                outcomes.append(
+                    _undated(
+                        document,
+                        f"only one {kind} in this course, so {kind} {number} "
+                        f"has no range to sit in",
+                    )
+                )
+            else:
+                # Computed, deliberately not written. See this function's
+                # docstring: interpolated dates have no measured accuracy, so
+                # they are offered rather than stored.
+                outcomes.append(
+                    DatingOutcome(
+                        document_id=document.id,
+                        filename=_filename(document),
+                        suggestion=suggestion,
+                        reason=(
+                            f"{kind} {number} of {min(numbers)}..{max(numbers)}; "
+                            f"interpolated, so offered rather than stored"
+                        ),
+                    )
+                )
             continue
 
-        try:
-            await redate_document(
-                session,
-                user_id=user_id,
-                document_id=document.id,
-                occurred_on=occurred_on,
-                source=source,
-            )
-        except ServiceError as error:
-            # Out-of-term, refused by the funnel. The heuristic was wrong, which
-            # is the case this whole phase is built to survive: report it undated.
-            outcomes.append(_skipped(document, str(error)))
-            continue
-
-        outcomes.append(
-            DatingOutcome(
-                document_id=document.id,
-                filename=_filename(document),
-                occurred_on=occurred_on,
-                source=source,
-            )
-        )
+        outcomes.append(_undated(document, "no date or lecture number in the filename"))
 
     return outcomes
 
@@ -197,7 +248,7 @@ def _filename(document: Document) -> str:
     return document.storage_key.rsplit("/", 1)[-1]
 
 
-def _skipped(document: Document, reason: str) -> DatingOutcome:
+def _undated(document: Document, reason: str) -> DatingOutcome:
     return DatingOutcome(
         document_id=document.id,
         filename=_filename(document),

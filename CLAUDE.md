@@ -113,6 +113,23 @@ is reliable, the date is not; that asymmetry is the whole point of
 `occurred_at_source`. Every ambiguous branch resolves to undated, and a hand-set
 date is never overwritten, including under `--overwrite`.
 
+**Decision, load-bearing for the rest of the phase: `inferred_filename` does not
+write `occurred_at`.** `date_course_from_filenames` stores only `filename_date`
+— a date the filename states — and returns an interpolated date as a
+`suggestion` the user accepts in one click. Interpolation fails by *weeks*, not
+days, with nothing in the input revealing it, and a confidently-wrong date
+discredits the whole timeline rather than one row. The candidate is still
+computed, so slice 3 keeps its disagreement signal. **This reverses only on a
+measured date accuracy against real material with real lecture dates** — not on
+a larger filename corpus, which would re-measure extraction. Suggestions are
+never cached: one more upload changes the interpolation range for the whole
+course.
+
+Two silent-failure lessons are recorded in ROADMAP as peers: slice 1's **guard
+whose cheapest fix damages what it protects**, and slice 2's **`is` against a
+`StrEnum` fails open on any ORM-loaded value** — always false, type-checks
+clean, protection silently absent. Use `==` for those columns.
+
 **Two Phase 2 gaps were fixed after it closed, on 2026-08-09** — see ROADMAP's
 "Corrected after the phase closed". The worker had no Render service, so the
 deployed app accepted uploads and ran nothing. `render.yaml` now declares the

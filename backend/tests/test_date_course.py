@@ -66,10 +66,39 @@ async def test_ordinals_are_spread_across_the_term(
         session, user_id=SEED_USER_ID, course_id=course.id
     )
 
-    assert by_name(outcomes, "lec1.pdf").occurred_on == STARTS_ON
-    assert by_name(outcomes, "lec11.pdf").occurred_on == ENDS_ON
-    assert by_name(outcomes, "lec6.pdf").occurred_on == date(2020, 3, 24)
-    assert all(o.source is OccurredAtSource.INFERRED_FILENAME for o in outcomes)
+    assert by_name(outcomes, "lec1.pdf").suggestion == STARTS_ON
+    assert by_name(outcomes, "lec11.pdf").suggestion == ENDS_ON
+    assert by_name(outcomes, "lec6.pdf").suggestion == date(2020, 3, 24)
+
+
+@pytest.mark.asyncio
+async def test_an_interpolated_date_is_offered_and_never_stored(
+    session: AsyncSession, course: Course
+) -> None:
+    """The decision this slice closed on, in a form that can fail.
+
+    Interpolated dates fail by weeks, not days -- `lec11` here is the highest
+    lecture uploaded, so it lands on the last day of term regardless of where
+    lecture 11 of a real 20-lecture course actually fell. Until that error is
+    measured against real lecture dates, the candidate is offered and the
+    document stays honestly undated.
+    """
+    document_id = await add(session, course, "lec1.pdf")
+    await add(session, course, "lec11.pdf")
+
+    outcomes = await date_course_from_filenames(
+        session, user_id=SEED_USER_ID, course_id=course.id
+    )
+
+    offered = by_name(outcomes, "lec1.pdf")
+    assert offered.suggestion == STARTS_ON
+    assert offered.occurred_on is None
+    assert offered.source is None
+
+    stored = await documents_repo.get(session, document_id, SEED_USER_ID)
+    assert stored is not None
+    assert stored.occurred_at is None
+    assert stored.occurred_at_source is None
 
 
 @pytest.mark.asyncio
@@ -106,9 +135,9 @@ async def test_two_sequences_do_not_share_a_range(
         session, user_id=SEED_USER_ID, course_id=course.id
     )
 
-    assert by_name(outcomes, "r01.pdf").occurred_on == STARTS_ON
-    assert by_name(outcomes, "r03.pdf").occurred_on == ENDS_ON
-    assert by_name(outcomes, "lec20.pdf").occurred_on == ENDS_ON
+    assert by_name(outcomes, "r01.pdf").suggestion == STARTS_ON
+    assert by_name(outcomes, "r03.pdf").suggestion == ENDS_ON
+    assert by_name(outcomes, "lec20.pdf").suggestion == ENDS_ON
 
 
 @pytest.mark.asyncio
@@ -196,11 +225,10 @@ async def test_a_hand_set_date_is_never_overwritten(
 
 
 @pytest.mark.asyncio
-async def test_an_inferred_date_is_left_alone_without_overwrite(
+async def test_a_stored_date_is_left_alone_without_overwrite(
     session: AsyncSession, course: Course
 ) -> None:
-    await add(session, course, "lec1.pdf")
-    await add(session, course, "lec9.pdf")
+    await add(session, course, "2020-03-02-lecture.pdf")
     await date_course_from_filenames(session, user_id=SEED_USER_ID, course_id=course.id)
 
     again = await date_course_from_filenames(
@@ -208,6 +236,33 @@ async def test_an_inferred_date_is_left_alone_without_overwrite(
     )
 
     assert {outcome.reason for outcome in again} == {"already dated"}
+
+
+@pytest.mark.asyncio
+async def test_a_suggestion_is_recomputed_every_run(
+    session: AsyncSession, course: Course
+) -> None:
+    """Suggestions are derived, never cached -- and uploading changes them.
+
+    The interpolation range comes from the ordinals actually present, so lecture
+    9 sits at the end of term until lecture 20 arrives and pushes it to the
+    middle. A stored candidate would be stale the moment the next file lands;
+    recomputing is correct by construction.
+    """
+    await add(session, course, "lec1.pdf")
+    await add(session, course, "lec9.pdf")
+    first = await date_course_from_filenames(
+        session, user_id=SEED_USER_ID, course_id=course.id
+    )
+    assert by_name(first, "lec9.pdf").suggestion == ENDS_ON
+
+    await add(session, course, "lec20.pdf")
+    second = await date_course_from_filenames(
+        session, user_id=SEED_USER_ID, course_id=course.id
+    )
+
+    assert by_name(second, "lec9.pdf").suggestion == date(2020, 3, 16)
+    assert by_name(second, "lec20.pdf").suggestion == ENDS_ON
 
 
 @pytest.mark.asyncio

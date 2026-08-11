@@ -82,10 +82,10 @@ async def _date_course(args: argparse.Namespace) -> int:
     its own transaction and commits per document, so wrapping the batch would
     nest one.
 
-    The undated documents are printed last and counted, because they are the
-    output that matters. A run that dates eleven of twenty is a good run this
-    phase is designed to produce, and the nine it declined are the list a person
-    then fixes by hand.
+    Three groups, printed in descending order of how much they are believed:
+    dated, suggested, undated. Only the first wrote anything. A run that dates
+    two of twenty and suggests eleven is a good run this phase is designed to
+    produce -- the rest is the list a person then works through.
     """
     async with async_session() as session:
         try:
@@ -103,11 +103,26 @@ async def _date_course(args: argparse.Namespace) -> int:
     for outcome in dated:
         print(f"{outcome.occurred_on}  {outcome.source}  {outcome.filename}")
 
-    undated = [outcome for outcome in outcomes if not outcome.occurred_on]
+    # Printed as `suggested`, never as a date in the same column as a stored one.
+    # These documents are still undated; the date beside them is an offer.
+    suggested = [outcome for outcome in outcomes if outcome.suggestion]
+    for outcome in suggested:
+        print(
+            f"suggested {outcome.suggestion}  {outcome.filename}  -- {outcome.reason}"
+        )
+
+    undated = [
+        outcome
+        for outcome in outcomes
+        if not outcome.occurred_on and not outcome.suggestion
+    ]
     for outcome in undated:
         print(f"{'undated':<10}  {outcome.filename}  -- {outcome.reason}")
 
-    print(f"\n{len(dated)} dated, {len(undated)} undated, {len(outcomes)} documents")
+    print(
+        f"\n{len(dated)} dated, {len(suggested)} suggested, {len(undated)} undated, "
+        f"{len(outcomes)} documents"
+    )
     return 0
 
 

@@ -1167,13 +1167,46 @@ figure suggests**, both structural rather than measured:
    lecture uploaded. A student who uploads lectures 1–11 of 20 gets lecture 11
    placed weeks late, and nothing in the filename reveals the error.
 
-The mitigating property, and the reason this ships as a weaker source rather than
-not at all: **interpolation is monotonic in the ordinal, so it never reorders
-anything.** The dates drift; lecture 4 still sorts before lecture 5. Since the
-product's headline is a chronological *ordering* with a first occurrence marked,
-order is the load-bearing output and the absolute date is the displayed one.
-That asymmetry — order reliable, date not — is exactly what `occurred_at_source`
-is for, and it is pinned by a test.
+The mitigating property, and the reason this is computed at all rather than not:
+**interpolation is monotonic in the ordinal, so it never reorders anything.** The
+dates drift; lecture 4 still sorts before lecture 5. Since the product's headline
+is a chronological *ordering* with a first occurrence marked, order is the
+load-bearing output and the absolute date is the displayed one. That asymmetry —
+order reliable, date not — is exactly what `occurred_at_source` is for, and it is
+pinned by a test.
+
+**Decision — `inferred_filename` does not write `occurred_at`. It offers a
+candidate.**
+
+`date_course_from_filenames` writes only `filename_date`, the date a filename
+states outright. An interpolated date is returned as a `suggestion` on the
+outcome; the document stays undated in the database.
+
+The reasoning is the two paragraphs above taken seriously. Extraction is
+measured and reliable, ordering is reliable by construction, and the date is
+neither — and it fails by *weeks*, not days, with nothing in the input revealing
+the error. A student who uploads 11 of 20 lectures gets lecture 11 rendered as
+mid-May with a straight face. A confidently-weeks-wrong date in a timeline is
+worse than an honest blank, and it is worse in the specific way this product
+cannot afford: it discredits the timeline rather than one row of it.
+
+The candidate is still computed, and that is deliberate too. It becomes an
+alternative the user accepts in one click rather than a date they must look up
+and type, it preserves the disagreement signal slice 3 needs when a syllabus and
+a filename claim different dates, and it means the work is not thrown away if
+the measurement later says the interpolation is fine.
+
+**What would reverse this: a measured date accuracy for `inferred_filename`, on
+real course material whose real lecture dates are known.** Specifically not a
+larger filename corpus — that measures extraction, which is already measured at
+58/12/0 and is not the thing in doubt.
+
+Suggestions are computed per call and never stored. The interpolation range comes
+from whichever ordinals are present, so one more upload changes every suggestion
+in the course; a cached candidate would be stale the moment the next file lands,
+and recomputing is correct by construction. Pinned by a test that uploads
+`lec20.pdf` and watches lecture 9's suggestion move from the end of term to the
+middle.
 
 **Every branch that could go either way resolves to `None`.** `02-11-2020` is
 refused whenever both readings are real dates, because February 11th and
@@ -1192,18 +1225,39 @@ semester.
 **A hand-set date is never overwritten, including under `--overwrite`.** That
 flag exists to re-run inference after fixing a course's term bounds. A person who
 typed a date in outranks every heuristic here, so the flag deliberately cannot
-reach `manual`. The first implementation of this check compared with `is` against
-the `StrEnum`, and `occurred_at_source` is `Mapped[str | None]` over `String(32)`
-— a loaded row carries a plain `str`, so the identity check was silently always
-false and manual dates *were* being overwritten. Caught by the test written for
-the rule, not by review. Worth remembering as its own small pattern: an identity
-comparison against a `StrEnum` fails open and silently whenever the value came
-back from the database.
+reach `manual`.
+
+**The first implementation of that check was broken, and the way it broke is the
+second tooling lesson of this phase — the peer of slice 1's docstring finding.**
+It compared with `is` against the `StrEnum`. `occurred_at_source` is
+`Mapped[str | None]` over `String(32)`, so a row loaded from the database carries
+a plain `str`, not the enum member; `document.occurred_at_source is
+OccurredAtSource.MANUAL` was therefore **always false**, and hand-set dates were
+being overwritten — the one thing the function documents at length that it must
+never do. Caught by the test written for that rule, not by review, and not by the
+type checker: the annotation says `str | None`, and `str is StrEnumMember` is a
+legal expression no tool objects to.
+
+Generalised: **an identity comparison against a `StrEnum` fails open whenever the
+value came back from the ORM.** A column typed `str` is never the enum member,
+however much the enum serves as its vocabulary. The failure is silent in the
+worst direction — `is` returns `False`, the guarded branch is skipped, and the
+protection quietly does not exist rather than raising and being noticed. Where
+slice 1's lesson is about a check whose cheapest fix damages what it protects,
+this one is about a check that reads correctly, type-checks, and does nothing.
+Both are findable only by a test asserting the *protected behaviour* rather than
+the mechanism. Use `==` for these columns; `is` is correct only for a value that
+came from a caller's own enum, as in `redate_document`'s `source` parameter.
 
 Verified live against the dev database, not only the test database: seven
-documents ingested under real OCW filenames produced one `filename_date`, five
-`inferred_filename` split correctly across two kinds, and `scan.pdf` surfaced
-undated with a reason. Suite is 111 tests, 38 of them new.
+documents ingested under real OCW filenames produced **1 dated, 5 suggested, 1
+undated** — the single `filename_date` written, five interpolated candidates
+offered across two independently-ranged kinds, and `scan.pdf` surfaced with a
+reason. The scratch course was then deleted, which took the manual
+three-statement transaction the missing `ON DELETE CASCADE` forces (chunks, runs,
+documents, course) — friction confirmed as real, though a one-off cleanup script
+is not the "first code path that deletes a `documents` row" that item waits for.
+Suite is 113 tests, 40 of them new.
 
 ---
 
