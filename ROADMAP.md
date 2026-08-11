@@ -877,6 +877,84 @@ observation with a number in it. Where that is not possible, the "Verified live"
 paragraphs above are the fallback: say what was run and what came back, so a
 later reader can tell what was checked from what was merely agreed.
 
+**Verified in production** (2026-08-10)
+
+Everything above was proved on a local stack — Phase 2 closed against Docker
+Compose, and both gap fixes were checked in the built image against local
+Postgres and Redis. What had never happened was a real upload through the
+deployed page. It has now: a PDF dropped on the Vercel frontend reached
+`Ready — 9 chunks`.
+
+What that upload establishes, ordered by how much it was actually in doubt:
+
+- **Gap 1 is closed where it mattered.** The failure it fixed existed only in the
+  deploy — code that worked locally and ran nothing in production. A job
+  dispatched by the API process and executed by the arq process inside the same
+  free-tier container is the only observation that can close it, and it is
+  precisely the one the built-image check could not make.
+- **Embedding reaches OpenAI from Render.** `ready` is unreachable until every
+  chunk has a vector, so `9 chunks` is nine round trips out of the container on
+  the key Render holds.
+- **The Supabase storage backend works** — bytes uploaded by the request handler
+  and downloaded again by the worker. Note what this does *not* prove: the
+  one-service topology gives both processes the same filesystem, so
+  `STORAGE_BACKEND=local` would have looked identical here. The reason for
+  `supabase` is still the one `render.yaml` gives — Render's disks are ephemeral
+  and a redeploy would orphan every `documents` row — not anything this run
+  demonstrated.
+
+**Gap 2 needed a second run, because the upload above could not show it.** The UI
+reports the document's terminal state and never the `processing_runs` row behind
+it, so a successful upload looks identical whether or not `submit_document` wrote
+the `queued` row. Watching it required `GET /documents/{id}/status` in the window
+between the enqueue and the claim.
+
+**That window is arq's poll delay, and nothing else.** The intuition to reach for
+is the free instance spinning down — upload while it wakes and catch it with no
+worker yet. It does not work, and the reason is in `start.sh`: the order is
+`alembic upgrade head`, then `arq &`, then `uvicorn &`. **uvicorn comes up last**,
+so any request that gets served at all arrives after arq is already polling.
+There is no worker-less state reachable over HTTP. What is left is the gap
+between `submit_document` committing the run and arq's next poll —
+`poll_delay` is arq's default 0.5s, since `WorkerSettings` sets only `max_tries`
+and `job_timeout`. So this is a race to be retried, not a condition to wait for:
+POST and GET back to back in one process, repeat until it lands.
+
+It landed on the first attempt (document `a97a4381`). The POST took 2203ms — a
+cold start — and the GET returned 578ms later:
+
+```
+status='pending' run_status='queued' attempts=1 chunks=0/0 stale=False
+```
+
+`run_status: "queued"` with `chunks 0/0` is the row Phase 2's first constraint
+always claimed was written and for a while was not: written by the request
+handler, before any worker touched the document. Polled to completion, the same
+document read:
+
+```
+status='ready' run_status='succeeded' attempts=1 embedded=9/9
+```
+
+**`attempts` staying at 1 across both readings is the second half of the fix.**
+`claim_queued` moved that row `queued` → `running` rather than inserting a second
+run beside it — had it inserted, this would read 2, the attempt would be
+double-counted, and the queued row would be stranded as outstanding work that had
+in fact been done.
+
+Both gap fixes are now observed in production rather than inferred from local
+runs. That matters most for the parts that only exist for failure: `stale` is
+measured from a `queued` run's `created_at`, and a job dropped by the persistence-
+free Key Value instance is visible only because this row is there to be left
+behind.
+
+**The run could not start until a course existed.** Production had none, so
+`create-course` was run against its database with the session-pooler URL that
+lives only in Render's dashboard, creating 6.006 (`2020-02-03..2020-05-12`).
+That there is no other way to do this is filed under Deferred — "a freshly
+deployed environment is unusable through its own UI" — rather than treated as a
+detail of this run, because it outlives the run and collides with Phase 7.
+
 ---
 
 ## Phase 3 — Dating
@@ -1070,3 +1148,41 @@ without them uploading anything first.
   awake; an external pinger would, at the cost of the monthly instance-hour
   allowance. Treat the route as a deploy gate and a dependency probe — which is
   what it was built for — not as monitoring.
+
+- **A freshly deployed environment is unusable through its own UI.** There are no
+  courses, and no way to create one except `python -m app.cli create-course` run
+  against that environment's database. Every path the app offers a person —
+  the upload page, and everything Phases 4-6 build on top of it — requires a
+  course to exist first. So the deployed app does nothing at all until someone
+  holding the production connection string intervenes from a shell.
+
+  Found on 2026-08-10, bootstrapping the first production upload: the upload page
+  correctly reported that there were no courses, which is the designed behaviour
+  and also a dead end. Both halves of that are true at once, and that is what
+  makes it easy to leave unfixed.
+
+  **CLI-only course creation is deliberate and is not the thing to undo.** Term
+  bounds are `NOT NULL` because Phase 3 dates lectures by interpolating within
+  them, so a course with wrong or guessed bounds silently produces wrong dates
+  rather than an error — that is why they are entered by hand, deliberately, in
+  a place that is hard to fill in carelessly. The gap is that there is no
+  *second* path, not that the first one is wrong.
+
+  **This collides with Phase 7 and is not covered by it.** Phase 7 seeds a demo
+  course from MIT OCW 6.006 for a logged-out visitor to browse, which fixes the
+  arriving stranger's *first* screen and nothing after it. The moment that
+  stranger signs up and wants their own material, they are back in the same dead
+  end, holding a PDF and a picker with nothing in it. Auth is what turns this
+  from an operator inconvenience into a broken product: today there is one user
+  and he owns the database.
+
+  Worth naming because it does not read as a design decision from outside. To
+  anyone who did not build this, an upload page that cannot accept an upload is
+  a bug, and the correct behaviour on display — an honest empty state instead of
+  an empty picker — makes it look more finished and therefore more broken.
+
+  The fix is a course-creation path in the product, whatever shape survives the
+  constraint above: a form that requires start and end dates rather than
+  defaulting them, or Phase 3's syllabus parsing running first and proposing
+  bounds a person confirms. Sequenced with Phase 7, since that is where the
+  second user appears; the Phase 3 route may make it nearly free by then.

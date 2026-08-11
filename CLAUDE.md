@@ -104,6 +104,17 @@ were built.** Treat a prose claim about behaviour as a hypothesis until the code
 says the same thing — this was the second occurrence, after arq's retry
 semantics.
 
+**Both were then observed in production on 2026-08-10**, not just locally — see
+ROADMAP's "Verified in production". An upload through the Vercel page reached
+`Ready — 9 chunks`, closing gap 1 where it actually failed; and a POST/GET race
+caught `run_status: "queued"`, `attempts: 1` before arq claimed it, with the same
+document later reading `succeeded`, `attempts: 1` — one row, not two. **The
+window is arq's `poll_delay` (0.5s), not the free instance spinning down**:
+`start.sh` starts arq before uvicorn, so nothing worker-less is reachable over
+HTTP. That work also surfaced a Deferred item: a fresh deploy has no courses and
+no way to create one except the CLI against its own database, so it is unusable
+through its own UI until someone with credentials intervenes.
+
 Phase 2 is closed, tagged `phase-2-complete`. The queue works end to end: a
 corrupt PDF fails readably, two concurrent uploads both finish, and a worker
 killed mid-job re-claims its document. Redis is only dispatch — Postgres is the
