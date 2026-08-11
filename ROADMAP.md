@@ -988,6 +988,75 @@ that date came from.
   `ARCHITECTURE.md`). One function is the only place that obligation can be
   reliably attached, so it exists before there is anything to cascade to.
 
+**Settled in slice 1 (the funnel + manual override)**
+
+`services/dating.py::redate_document` is the single writer. `PATCH
+/documents/{id}/date` is the `manual` path through it, and the two heuristics
+become callers in slices 2 and 3 rather than writers.
+
+**The funnel is guarded by a test, not by convention.**
+`tests/test_occurred_at_sole_writer.py` parses every module under `app/` with
+`ast` and asserts two things: nothing outside `repositories/documents.py` writes
+the column, and nothing outside `services/dating.py` calls the function that
+does. It looks for the four shapes a write can take — `Document(occurred_at=…)`,
+`.values(occurred_at=…)`, `x.occurred_at = …`, and raw SQL naming the column in
+an `UPDATE`/`INSERT` — rather than for the identifier anywhere, because a check
+that fires on *reading* the value gets muted within a week.
+
+Its limit, stated so nobody over-trusts it: it reads source, not behaviour. A
+column name assembled at runtime walks past it. It guards the accident — a later
+session adding `occurred_at=` to a nearby query because that is where the data
+happened to be — which is the failure that actually occurs. ARCHITECTURE's
+asymmetry note is amended to match: "no structural guard" was always about
+holding two copies equal, not about who may write, and Phase 5's deferred
+constraint trigger covers the harder half.
+
+**Two tests exist to prove the guard is wired up.** One plants the three write
+shapes and asserts it sees exactly three. The other plants a docstring saying the
+code updates `occurred_at` and asserts it sees none — which is not hypothetical.
+The first run of the check failed on `redate_document`'s own docstring, because
+uppercasing the text before looking for `UPDATE ` matched the word "update" in
+prose. **A guard that punishes documentation gets satisfied by deleting the
+documentation**, so docstrings are now excluded and that exclusion is pinned.
+
+**`redate_document` does real work this phase, deliberately.** It owns the
+term-bounds check. Without it the function would be a wrapper around one UPDATE
+whose only justification is a Phase 5 write that does not exist — exactly the
+shape a later session inlines. It also owns its transaction, because Phase 5's
+cascade must be atomic with the date write and a boundary every caller has to
+remember is one that a caller will forget.
+
+**A `date` in, a timestamp at midnight UTC out.** All four sources are
+day-granular — a syllabus names a day, a filename names a day, a person picking a
+date picks a day — so accepting a datetime would invite callers to invent a time
+of day no source knows. Server-local midnight was the alternative and would make
+Phase 4's ordering depend on where the process runs.
+
+**`filename_date` added as a fourth source** (migration `0005`), deviating from
+the three this phase originally listed. `2024-09-14.pdf` is a date *read*; `Lecture
+07.pdf` is a date *interpolated* against term bounds, and it goes systematically
+wrong the moment a term has a reading week or two lectures in one week. Filing
+both as `inferred_filename` blinds the UI to the difference exactly where
+`occurred_at_source` is supposed to be honest. `inferred_filename` keeps its name
+and narrows to the interpolated case; nothing had ever written it, so there was no
+data to migrate. **No numeric confidence score anywhere** — `0.73` is
+unfalsifiable and reads as authoritative, and this is the same failure Phase 2
+refused when it kept `Progress` out of `components/ui/`.
+
+**Out-of-term dates are refused, except manual ones.** An inferred date outside
+the course's bounds is the heuristic being wrong, and a wrong date is worse than
+no date. A manual one is different: the user is the authority on when their own
+lecture happened, and refusing leaves a document nobody can fix — so it is
+stored, returned with `outside_term: true`, and logged as a warning naming the
+course and its bounds. That way a course with wrong term bounds shows up as a
+pattern rather than as one odd document.
+
+Verified live against the dev database, not only in the test database the suite
+rebuilds from scratch: `0005` applied to a database with existing rows, and the
+route answered `outside_term: false` in term, `outside_term: true` with the
+warning line out of term, and 404 for an unknown document. Suite is 73 tests, 20
+of them new.
+
 **Carried in from Phase 2, slice 2 — `documents` has no `ON DELETE CASCADE`**
 
 `fk_chunks_document_id_user_id` and the equivalent on `processing_runs` reference
@@ -997,14 +1066,31 @@ three-statement transaction — chunks, then runs, then the document — and a p
 stale Phase 1 row had to be removed after the `storage_key` rename.
 
 Deliberately not fixed in Phase 2, which has no delete path: a migration for a
-feature that does not exist is speculative. **It is recorded here because Phase 3
-is where it stops being free.** Re-dating and re-processing touch documents whose
-children may need rebuilding, and the first code that deletes one will either
-discover this as a foreign-key error or, worse, quietly leave chunks behind
-pointing at a document that is gone. Decide the cascade deliberately when
-`redate_document` lands — including whether `processing_runs` *should* cascade at
-all, given that run history outliving its document is arguably the point of
-keeping it.
+feature that does not exist is speculative.
+
+**Corrected in Phase 3, slice 1 — Phase 3 is not where it stops being free.**
+This item used to say it was, on the reasoning that "re-dating and re-processing
+touch documents whose children may need rebuilding". Checked against Phase 3's
+actual scope before starting it: syllabus parsing reads, filename inference reads,
+the override endpoint updates one column, the UI displays and corrects. **Nothing
+in this phase deletes a document.** The nearest thing is `force=true` re-ingest,
+which has existed since Phase 2 and deletes *chunks* — the foreign key in question
+is chunks→documents, so it is never exercised.
+
+That is the same pattern as Phase 2's two gaps: a confident forecast about later
+work that nobody re-checked when later arrived. A phase number is the wrong
+trigger for a deferred item, because it comes due whether or not the condition it
+was really about has happened. **The trigger is now a condition: the first code
+path that deletes a `documents` row** — most likely a Phase 7 affordance for "I
+uploaded the wrong file".
+
+**Settled now, since deciding is free and the migration is not:** both children
+cascade. `processing_runs` cannot meaningfully outlive its document —
+`document_id` is NOT NULL under a composite foreign key, so "outliving" would
+require a nullable column and would cost the ownership pin that composite key
+exists to provide. Run history that must survive belongs in `learning_events`,
+which is append-only and polymorphic with no foreign key, and which exists for
+exactly this.
 
 ---
 

@@ -13,8 +13,15 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_queue, get_session
+from app.models import OccurredAtSource
 from app.models.user import SEED_USER_ID
-from app.schemas.documents import DocumentAccepted, DocumentProgress
+from app.schemas.documents import (
+    DocumentAccepted,
+    DocumentDate,
+    DocumentDateUpdate,
+    DocumentProgress,
+)
+from app.services.dating import redate_document
 from app.services.errors import ConflictError, NotFoundError, ServiceError
 from app.services.processing import document_progress, submit_document
 
@@ -112,6 +119,40 @@ async def document_status(
         )
     except ServiceError as error:
         raise _as_http(error) from error
+
+
+@router.patch("/{document_id}/date")
+async def correct_document_date(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    document_id: uuid.UUID,
+    body: DocumentDateUpdate,
+) -> DocumentDate:
+    """Set a document's date by hand. The `manual` path of invariant 4.
+
+    PATCH rather than PUT: this replaces one field of a document, not the
+    document. A date outside the course's term is accepted here and nowhere else
+    -- see `redate_document` -- so a 200 with `outside_term: true` is a real
+    answer this route can give, not an error the client should retry.
+    """
+    try:
+        result = await redate_document(
+            session,
+            user_id=SEED_USER_ID,
+            document_id=document_id,
+            occurred_on=body.occurred_on,
+            source=OccurredAtSource.MANUAL,
+        )
+    except ServiceError as error:
+        raise _as_http(error) from error
+
+    return DocumentDate(
+        document_id=result.document.id,
+        occurred_at=result.document.occurred_at,
+        occurred_at_source=result.document.occurred_at_source,
+        starts_on=result.starts_on,
+        ends_on=result.ends_on,
+        outside_term=result.outside_term,
+    )
 
 
 def _default_title(filename: str | None) -> str:

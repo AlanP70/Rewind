@@ -1,6 +1,7 @@
 """Queries against `documents`. The only place document SQL is written."""
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,38 @@ async def set_status(session: AsyncSession, document_id: uuid.UUID, status: str)
     """
     await session.execute(
         update(Document).where(Document.id == document_id).values(status=status)
+    )
+
+
+async def set_occurred_at(
+    session: AsyncSession,
+    *,
+    document_id: uuid.UUID,
+    user_id: uuid.UUID,
+    occurred_at: datetime,
+    source: str,
+) -> None:
+    """The only statement in the codebase that writes `documents.occurred_at`.
+
+    **Call this from `services.dating.redate_document` and nowhere else.** That is
+    invariant 4, and it is not decoration: from Phase 5 on, every change to this
+    column must also move `concept_mentions.occurred_at` for the same document in
+    the same transaction, and no constraint can enforce that (ARCHITECTURE, "The
+    asymmetry"). One function is where that obligation is attached, so a second
+    caller here is a mention table that silently disagrees with its documents.
+
+    `tests/test_occurred_at_sole_writer.py` fails if either half of that stops
+    being true -- if another module writes the column, or if anything but
+    `redate_document` calls this.
+
+    The date and its provenance are set together in one statement. They are bound
+    by `ck_documents_occurred_at_has_source`, so writing one without the other is
+    a constraint violation rather than a subtly undated row.
+    """
+    await session.execute(
+        update(Document)
+        .where(Document.id == document_id, Document.user_id == user_id)
+        .values(occurred_at=occurred_at, occurred_at_source=source)
     )
 
 

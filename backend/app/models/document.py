@@ -27,7 +27,19 @@ class DocumentKind(StrEnum):
 
 
 class OccurredAtSource(StrEnum):
+    """How a document's date was arrived at, worst-case error ascending.
+
+    Ordered deliberately: this is the confidence signal the UI renders, and there
+    is no numeric confidence anywhere in the system on purpose. A score like
+    `0.73` is unfalsifiable and reads as authoritative; "interpolated from a
+    lecture number" tells a person exactly how much to trust it and what to check.
+
+    `FILENAME_DATE` and `INFERRED_FILENAME` both come from a filename and are not
+    the same kind of claim -- see migration 0005.
+    """
+
     PARSED_SYLLABUS = "parsed_syllabus"
+    FILENAME_DATE = "filename_date"
     INFERRED_FILENAME = "inferred_filename"
     MANUAL = "manual"
 
@@ -64,7 +76,8 @@ class Document(Base, CreatedAt):
             name="ck_documents_status",
         ),
         CheckConstraint(
-            "occurred_at_source IN ('parsed_syllabus', 'inferred_filename', 'manual')",
+            "occurred_at_source IN "
+            "('parsed_syllabus', 'filename_date', 'inferred_filename', 'manual')",
             name="ck_documents_occurred_at_source",
         ),
         # We either know when this happened and how we know, or neither. Storing a

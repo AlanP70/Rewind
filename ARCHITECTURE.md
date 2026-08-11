@@ -406,6 +406,30 @@ That is precisely why the same-transaction write rule for `occurred_at` is
 genuinely load-bearing rather than one convention among several. Everything else
 in this section has been handed to the database; this one thing cannot be.
 
+**Amended in Phase 3, slice 1 — "no structural guard" is narrower than it
+sounds.** What the paragraph above argues is that no constraint can hold *two
+mutable copies equal across a change*. That is true, and it is the hard half. It
+does not follow that nothing can be enforced here, and the original wording read
+as though it did — which is licence for the next reader to treat the whole rule
+as convention.
+
+Two separable claims:
+
+- *"Only one function may write `documents.occurred_at`."* **Enforceable.**
+  `tests/test_occurred_at_sole_writer.py` parses every module under `app/` and
+  fails if the column is written outside `repositories/documents.py` or if
+  anything but `services/dating.py` calls the function that writes it. Source
+  analysis, so it catches the accident rather than the determined — which is the
+  failure that actually happens.
+- *"Every such write moved `concept_mentions` with it."* **Not enforceable by a
+  constraint** — this is what the paragraph above is really about. But it is
+  reachable by a `DEFERRABLE INITIALLY DEFERRED` constraint trigger checking at
+  COMMIT that no mention of the document disagrees with it. Phase 5 builds that,
+  when there is a `concept_mentions` table to check against.
+
+Deliberately not built in Phase 3: a trigger enforcing only the first claim would
+be replaced by the second one a phase later.
+
 So it is funnelled instead of constrained. **Exactly one service function,
 `redate_document`, writes `documents.occurred_at`** — every override path goes
 through it, and from Phase 5 on it also updates that document's

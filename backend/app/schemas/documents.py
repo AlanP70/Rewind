@@ -6,10 +6,11 @@ should not silently rename itself in JSON.
 """
 
 import uuid
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
-from app.models import DocumentStatus, RunStatus
+from app.models import DocumentStatus, OccurredAtSource, RunStatus
 
 
 class DocumentAccepted(BaseModel):
@@ -54,3 +55,41 @@ class DocumentProgress(BaseModel):
     # or still `queued` long after it was enqueued, which is what a dropped job
     # looks like from here.
     stale: bool
+
+
+class DocumentDateUpdate(BaseModel):
+    """A user correcting a document's date by hand.
+
+    A `date`, not a datetime. Every source of a date in this system is
+    day-granular, and a form that asks for a time would be asking the user to
+    invent one. See `services.dating.redate_document`.
+
+    No `source` field, deliberately. This endpoint *is* the manual path, so the
+    provenance is a property of how the date arrived rather than something the
+    caller declares -- a client that could send `parsed_syllabus` could launder a
+    guess into a fact, which is the one thing `occurred_at_source` exists to stop.
+    """
+
+    occurred_on: date
+
+
+class DocumentDate(BaseModel):
+    """A document's date and the honest account of where it came from."""
+
+    document_id: uuid.UUID
+
+    # Both null together or neither, enforced by
+    # `ck_documents_occurred_at_has_source`. An undated document is a real state
+    # the UI must render -- it is what "surfaced, never silently defaulted" means.
+    occurred_at: datetime | None
+    occurred_at_source: OccurredAtSource | None
+
+    # The course's term, echoed back so the UI can show the range a date is being
+    # judged against without a second request.
+    starts_on: date
+    ends_on: date
+
+    # The date was accepted and sits outside that term. Only reachable manually:
+    # every other source is refused when it lands outside. A UI that ignores this
+    # turns a user's correction into a silently odd row.
+    outside_term: bool
