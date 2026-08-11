@@ -84,9 +84,34 @@ Phase 5 adds a write that must accompany every date change and no constraint can
 force it.
 
 Two items are explicitly carried into this phase by ROADMAP: `documents` has no
-`ON DELETE CASCADE`, which "stops being free" here; and Phase 2's frontend has no
-test runner, so if Phase 3's dating UI justifies one, the `describe()` assertions
-in Phase 2's outstanding-gaps item land in the same slice.
+`ON DELETE CASCADE` — **re-checked in slice 1 and corrected: Phase 3 is not where
+that stops being free**, nothing in this phase deletes a document, and the
+trigger is now the condition "first code path that deletes a `documents` row";
+and Phase 2's frontend has no test runner, so if Phase 3's dating UI justifies
+one, the `describe()` assertions in Phase 2's outstanding-gaps item land in the
+same slice.
+
+Slice 1 landed the funnel, migration `0005` (which adds `filename_date`, so the
+enum is four values, not ROADMAP's original three), and `PATCH
+/documents/{id}/date`. The sole-writer rule is enforced by an **AST test**, not
+convention — `tests/test_occurred_at_sole_writer.py` — with two further tests
+proving that guard can fail and that it ignores prose. Its first run failed on
+`redate_document`'s own docstring, and the generalised lesson is in ROADMAP: **a
+guard is an incentive, and the failure mode to watch is a check whose cheapest
+fix damages what the check protects.**
+
+Slice 2 landed `services/filename_dates.py` — three pure functions over a string
+plus the term, pure so the heuristic can be measured without a database — plus
+`date_course_from_filenames` and the `date-course` CLI command. **Measured on 70
+real MIT 6.006 filenames from OCW (committed as a labelled TSV): 58 correct, 12
+undated, 0 wrong.** That measures ordinal *extraction* against decoy numbers, not
+date accuracy; those filenames carry no dates, so `inferred_filename`'s date
+accuracy is **unmeasured and unclaimed**. Interpolation is expected to drift —
+real timetables are unevenly spaced, and the range depends on which files the
+student happened to upload — but it is **monotonic, so it never reorders**. Order
+is reliable, the date is not; that asymmetry is the whole point of
+`occurred_at_source`. Every ambiguous branch resolves to undated, and a hand-set
+date is never overwritten, including under `--overwrite`.
 
 **Two Phase 2 gaps were fixed after it closed, on 2026-08-09** — see ROADMAP's
 "Corrected after the phase closed". The worker had no Render service, so the

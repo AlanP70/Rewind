@@ -1016,8 +1016,24 @@ shapes and asserts it sees exactly three. The other plants a docstring saying th
 code updates `occurred_at` and asserts it sees none — which is not hypothetical.
 The first run of the check failed on `redate_document`'s own docstring, because
 uppercasing the text before looking for `UPDATE ` matched the word "update" in
-prose. **A guard that punishes documentation gets satisfied by deleting the
-documentation**, so docstrings are now excluded and that exclusion is pinned.
+prose. Docstrings are now excluded and that exclusion is pinned by its own test.
+
+**The general lesson is about what a check pays people to do, and it outlives
+this regex.** A guard is an incentive, not just a filter: whatever makes it go
+green is what the codebase will drift toward. This one, as first written, could
+be satisfied two ways — narrow the pattern, or delete the sentence explaining the
+invariant. The second is faster, requires no thought about the matcher, and
+leaves a green run behind it. It is the wrong repair, and it is the *tempting*
+one, which is precisely why noticing costs something.
+
+So the failure mode to watch for is not "false positive" but **a check whose
+cheapest fix damages the thing the check exists to protect**. A rule against
+writing a column that fires on explaining the rule; a coverage threshold met by
+deleting the untested branch; a lint against complexity satisfied by splitting a
+function nobody can now follow. When a guard fires, the question is not only "is
+this a real hit?" but "what is the laziest way to make this stop, and what does
+that way cost?" If the cheap fix is the destructive one, the guard is
+mis-specified and fixing the guard is the work — not paying its toll.
 
 **`redate_document` does real work this phase, deliberately.** It owns the
 term-bounds check. Without it the function would be a wrapper around one UPDATE
@@ -1091,6 +1107,103 @@ require a nullable column and would cost the ownership pin that composite key
 exists to provide. Run history that must survive belongs in `learning_events`,
 which is append-only and polymorphic with no foreign key, and which exists for
 exactly this.
+
+**Settled in slice 2 (filename inference)**
+
+`app/services/filename_dates.py` holds three pure functions —
+`read_explicit_date`, `read_ordinal`, `interpolate` — over a string plus the
+course's term. No session, no I/O, deliberately: a hit rate is only meaningful if
+it can be measured by calling the parser directly on a list of filenames, and a
+parser that needs a database to answer a question about a string cannot be
+measured that way. `services/dating.py` grows
+`date_course_from_filenames`, which orchestrates them and routes every write
+through `redate_document`. `date-course` on the CLI makes the slice runnable
+before there is any UI.
+
+**The two filename sources are genuinely different objects, which is why 0005
+split the enum.** `2020-02-11-dfs.pdf` states a date — testimony, wrong only if
+whoever named the file was wrong (`filename_date`). `lecture-07.pdf` states an
+ordinal, and a date exists only after arithmetic performed on top of testimony
+about something else (`inferred_filename`).
+
+**Measured hit rate — 70 real filenames, 58 correct, 12 undated, 0 wrong.**
+
+The corpus is the published resource filenames of MIT 6.006 Spring 2020, fetched
+from MIT OpenCourseWare and committed as
+`backend/tests/data/ocw_6006_s20_filenames.tsv` with a hand label per line. They
+were not written for this test, which is the only reason the number means
+anything: a corpus invented alongside a parser measures whether its author
+thought of a case, not whether the parser works. The test that computes this
+lives in the suite, so the three figures are pinned and a regression moves one.
+
+The 12 undated are the three quizzes and three review sessions with their
+solution files (`_q1`, `_review2_sol`). Neither `quiz` nor `review` is in the
+keyword map, and both were left out *after* the measurement rather than added
+before it — adding them would improve the number by construction and prove
+nothing, since this corpus is also the only evidence that those shapes exist.
+
+**What that number does not cover, stated plainly because the shape of the gap
+matters more than the figure.** These filenames carry ordinals and no dates. So
+this measures *extraction* — surviving the three decoy numbers (`6`, `006`, `20`)
+that sit in front of every real ordinal — and says nothing about whether an
+interpolated date is right. The date half is unmeasured. OCW's calendar page is
+client-rendered and would not yield lecture dates to four separate fetch
+attempts, and inventing the dates of real 2020 lectures to score against would be
+the exact fabrication this phase exists to prevent. **Until a real
+lecture-date set exists, no claim about `inferred_filename` date accuracy is
+supported by evidence.**
+
+**Two reasons to expect interpolated dates to be worse than the extraction
+figure suggests**, both structural rather than measured:
+
+1. *Real timetables are not evenly spaced.* A Tuesday/Thursday course alternates
+   2- and 5-day gaps, spring break puts a week-long hole mid-term, and 6.006's
+   own syllabus says 2 lecture sessions/week — 20 lectures fill about 10 weeks of
+   a 14.7-week term. Spreading 20 ordinals evenly across the whole term stretches
+   a sequence that does not stretch.
+2. *Interpolation is only as good as the completeness of the upload.* The range
+   comes from the ordinals actually present. The live run below dated
+   `MIT6_006S20_lec11.pdf` to the last day of term because 11 was the highest
+   lecture uploaded. A student who uploads lectures 1–11 of 20 gets lecture 11
+   placed weeks late, and nothing in the filename reveals the error.
+
+The mitigating property, and the reason this ships as a weaker source rather than
+not at all: **interpolation is monotonic in the ordinal, so it never reorders
+anything.** The dates drift; lecture 4 still sorts before lecture 5. Since the
+product's headline is a chronological *ordering* with a first occurrence marked,
+order is the load-bearing output and the absolute date is the displayed one.
+That asymmetry — order reliable, date not — is exactly what `occurred_at_source`
+is for, and it is pinned by a test.
+
+**Every branch that could go either way resolves to `None`.** `02-11-2020` is
+refused whenever both readings are real dates, because February 11th and
+November 2nd are equally consistent with the string and the convention depends on
+where the person naming the file grew up; `13-02-2020` is read, since only one
+ordering survives and nothing is being guessed. A missing year is taken from the
+term only when the term contains exactly one such date. A lone ordinal returns
+`None` from the arithmetic itself — `lowest == highest` is no range — rather than
+through a special case someone must remember to write.
+
+Ordinals are grouped by *kind* and interpolated within their own group. A course
+holding twenty lectures and twelve recitations has two sequences sharing a term,
+and pooling them would put recitation 12 beside lecture 20 at the end of the
+semester.
+
+**A hand-set date is never overwritten, including under `--overwrite`.** That
+flag exists to re-run inference after fixing a course's term bounds. A person who
+typed a date in outranks every heuristic here, so the flag deliberately cannot
+reach `manual`. The first implementation of this check compared with `is` against
+the `StrEnum`, and `occurred_at_source` is `Mapped[str | None]` over `String(32)`
+— a loaded row carries a plain `str`, so the identity check was silently always
+false and manual dates *were* being overwritten. Caught by the test written for
+the rule, not by review. Worth remembering as its own small pattern: an identity
+comparison against a `StrEnum` fails open and silently whenever the value came
+back from the database.
+
+Verified live against the dev database, not only the test database: seven
+documents ingested under real OCW filenames produced one `filename_date`, five
+`inferred_filename` split correctly across two kinds, and `scan.pdf` surfaced
+undated with a reason. Suite is 111 tests, 38 of them new.
 
 ---
 

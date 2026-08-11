@@ -61,6 +61,23 @@ async def set_occurred_at(
     )
 
 
+async def list_for_course(
+    session: AsyncSession, *, course_id: uuid.UUID, user_id: uuid.UUID
+) -> list[Document]:
+    """Every document in one course, oldest row first.
+
+    Ordered by `created_at`, not `occurred_at` -- the caller is the filename
+    dater, and every document it cares about is one whose `occurred_at` is still
+    null. Ordering by the column being filled in would sort by nothing.
+    """
+    result = await session.execute(
+        select(Document)
+        .where(Document.course_id == course_id, Document.user_id == user_id)
+        .order_by(Document.created_at)
+    )
+    return list(result.scalars().all())
+
+
 async def get_by_storage_key(
     session: AsyncSession, user_id: uuid.UUID, storage_key: str
 ) -> Document | None:

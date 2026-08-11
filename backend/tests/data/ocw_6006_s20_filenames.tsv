@@ -1,0 +1,86 @@
+# Hand-labelled ground truth for filename dating.
+#
+# Provenance: the published resource filenames of MIT 6.006 "Introduction to
+# Algorithms", Spring 2020, on MIT OpenCourseWare, fetched 2026-08-11 from
+# ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/. They were
+# not written for this test, which is the only reason a number measured on them
+# means anything -- a corpus invented alongside the parser measures whether the
+# author thought of a case, not whether the parser works.
+#
+# Each line is `filename<TAB>kind:ordinal`, or `-` for a file that carries no
+# ordinal at all. The label is read off the filename's own semantics (`_lec18`
+# is lecture 18); it is not a statement about what the parser ought to return.
+#
+# These filenames carry NO dates -- only ordinals. So this set measures ordinal
+# extraction against three decoy numbers per name (`6`, `006`, `20`), and says
+# nothing about whether the interpolated dates are right. See ROADMAP, Phase 3.
+mit6_006s20_final.pdf	-
+mit6_006s20_final_sol.pdf	-
+mit6_006s20_lec1.pdf	lecture:1
+mit6_006s20_lec10.pdf	lecture:10
+mit6_006s20_lec11.pdf	lecture:11
+mit6_006s20_lec12.pdf	lecture:12
+mit6_006s20_lec13.pdf	lecture:13
+mit6_006s20_lec14.pdf	lecture:14
+mit6_006s20_lec15.pdf	lecture:15
+mit6_006s20_lec16.pdf	lecture:16
+mit6_006s20_lec17.pdf	lecture:17
+mit6_006s20_lec18.pdf	lecture:18
+mit6_006s20_lec19.pdf	lecture:19
+mit6_006s20_lec2.pdf	lecture:2
+mit6_006s20_lec20.pdf	lecture:20
+mit6_006s20_lec3.pdf	lecture:3
+mit6_006s20_lec4.pdf	lecture:4
+mit6_006s20_lec5.pdf	lecture:5
+mit6_006s20_lec6.pdf	lecture:6
+mit6_006s20_lec7.pdf	lecture:7
+mit6_006s20_lec8.pdf	lecture:8
+mit6_006s20_lec9.pdf	lecture:9
+mit6_006s20_ps0.pdf	pset:0
+mit6_006s20_ps1.pdf	pset:1
+mit6_006s20_ps2.pdf	pset:2
+mit6_006s20_ps3.pdf	pset:3
+mit6_006s20_ps4.pdf	pset:4
+mit6_006s20_ps5.pdf	pset:5
+mit6_006s20_ps5_questions.pdf	pset:5
+mit6_006s20_ps5_solutions.pdf	pset:5
+mit6_006s20_ps6.pdf	pset:6
+mit6_006s20_ps6_questions.pdf	pset:6
+mit6_006s20_ps6_solutions.pdf	pset:6
+mit6_006s20_ps7.pdf	pset:7
+mit6_006s20_ps7_questions.pdf	pset:7
+mit6_006s20_ps7_solutions.pdf	pset:7
+mit6_006s20_ps8.pdf	pset:8
+mit6_006s20_ps8_questions.pdf	pset:8
+mit6_006s20_ps8_solutions.pdf	pset:8
+mit6_006s20_q1.pdf	quiz:1
+mit6_006s20_q1_sol.pdf	quiz:1
+mit6_006s20_q2.pdf	quiz:2
+mit6_006s20_q2_sol.pdf	quiz:2
+mit6_006s20_q3.pdf	quiz:3
+mit6_006s20_q3_sol.pdf	quiz:3
+mit6_006s20_r01.pdf	recitation:01
+mit6_006s20_r02.pdf	recitation:02
+mit6_006s20_r03.pdf	recitation:03
+mit6_006s20_r04.pdf	recitation:04
+mit6_006s20_r05.pdf	recitation:05
+mit6_006s20_r06.pdf	recitation:06
+mit6_006s20_r07.pdf	recitation:07
+mit6_006s20_r08.pdf	recitation:08
+mit6_006s20_r09.pdf	recitation:09
+mit6_006s20_r10.pdf	recitation:10
+mit6_006s20_r11.pdf	recitation:11
+mit6_006s20_r12.pdf	recitation:12
+mit6_006s20_r13.pdf	recitation:13
+mit6_006s20_r14.pdf	recitation:14
+mit6_006s20_r15.pdf	recitation:15
+mit6_006s20_r16.pdf	recitation:16
+mit6_006s20_r17.pdf	recitation:17
+mit6_006s20_r18.pdf	recitation:18
+mit6_006s20_r19.pdf	recitation:19
+mit6_006s20_review1.pdf	review:1
+mit6_006s20_review1_sol.pdf	review:1
+mit6_006s20_review2.pdf	review:2
+mit6_006s20_review2_sol.pdf	review:2
+mit6_006s20_review3.pdf	review:3
+mit6_006s20_review3_sol.pdf	review:3

@@ -18,6 +18,7 @@ from app.core.db import async_session
 from app.core.storage import get_storage, storage_key
 from app.models.user import SEED_USER_ID
 from app.schemas.ingestion import PlannedChunk
+from app.services.dating import date_course_from_filenames
 from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
 from app.services.ingestion import create_course, plan_chunks
@@ -71,6 +72,42 @@ async def _create_course(args: argparse.Namespace) -> int:
             term=args.term,
         )
         print(f"course {course.id}  {course.name}  {course.starts_on}..{course.ends_on}")
+    return 0
+
+
+async def _date_course(args: argparse.Namespace) -> int:
+    """Date a course's documents from their filenames, and print what it could not.
+
+    No `session.begin()` here, unlike every other command: `redate_document` owns
+    its own transaction and commits per document, so wrapping the batch would
+    nest one.
+
+    The undated documents are printed last and counted, because they are the
+    output that matters. A run that dates eleven of twenty is a good run this
+    phase is designed to produce, and the nine it declined are the list a person
+    then fixes by hand.
+    """
+    async with async_session() as session:
+        try:
+            outcomes = await date_course_from_filenames(
+                session,
+                user_id=SEED_USER_ID,
+                course_id=args.course_id,
+                overwrite=args.overwrite,
+            )
+        except ServiceError as error:
+            print(error, file=sys.stderr)
+            return 1
+
+    dated = [outcome for outcome in outcomes if outcome.occurred_on]
+    for outcome in dated:
+        print(f"{outcome.occurred_on}  {outcome.source}  {outcome.filename}")
+
+    undated = [outcome for outcome in outcomes if not outcome.occurred_on]
+    for outcome in undated:
+        print(f"{'undated':<10}  {outcome.filename}  -- {outcome.reason}")
+
+    print(f"\n{len(dated)} dated, {len(undated)} undated, {len(outcomes)} documents")
     return 0
 
 
@@ -193,6 +230,18 @@ def main() -> int:
     course.add_argument("--code")
     course.add_argument("--term")
     course.set_defaults(handler=_create_course)
+
+    dating = subcommands.add_parser(
+        "date-course", help="date a course's documents from their filenames"
+    )
+    dating.add_argument("course_id", type=uuid.UUID)
+    dating.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="re-infer dates that inference already set, e.g. after fixing the "
+        "course's term bounds. Never touches a date set by hand.",
+    )
+    dating.set_defaults(handler=_date_course)
 
     ingest = subcommands.add_parser("ingest", help="ingest a PDF into a course")
     ingest.add_argument("course_id", type=uuid.UUID)
