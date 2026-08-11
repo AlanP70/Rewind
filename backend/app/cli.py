@@ -18,7 +18,11 @@ from app.core.db import async_session
 from app.core.storage import get_storage, storage_key
 from app.models.user import SEED_USER_ID
 from app.schemas.ingestion import PlannedChunk
-from app.services.dating import date_course_from_filenames
+from app.services.dating import (
+    ScheduleEntry,
+    date_course_from_filenames,
+    date_course_from_syllabus,
+)
 from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
 from app.services.ingestion import create_course, plan_chunks
@@ -75,26 +79,76 @@ async def _create_course(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_schedule(path: Path) -> list[ScheduleEntry]:
+    """Read a schedule from a TSV: `kind<TAB>ordinal<TAB>YYYY-MM-DD`.
+
+    A stand-in for the syllabus parser, which needs real syllabi to build
+    against and lands separately. It is not throwaway: hand-transcribing a real
+    syllabus into this format is how that parser gets a ground truth to be
+    measured against, the same way slice 2's filename corpus works.
+
+    Every error names its line. A schedule silently missing a row dates fewer
+    documents and looks like the heuristic being cautious.
+    """
+    entries: list[ScheduleEntry] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise ValueError(f"{path}:{number}: expected 3 tab-separated fields")
+        kind, ordinal, occurred_on = (field.strip() for field in fields)
+        try:
+            entries.append(
+                ScheduleEntry(
+                    kind=kind,
+                    ordinal=int(ordinal),
+                    occurred_on=date.fromisoformat(occurred_on),
+                )
+            )
+        except ValueError as error:
+            raise ValueError(f"{path}:{number}: {error}") from error
+    return entries
+
+
 async def _date_course(args: argparse.Namespace) -> int:
-    """Date a course's documents from their filenames, and print what it could not.
+    """Date a course's documents, and print what it could not.
+
+    With `--schedule` the dates come from the syllabus and the filename supplies
+    only the session number; without it, from filenames alone.
 
     No `session.begin()` here, unlike every other command: `redate_document` owns
     its own transaction and commits per document, so wrapping the batch would
     nest one.
 
     Three groups, printed in descending order of how much they are believed:
-    dated, suggested, undated. Only the first wrote anything. A run that dates
-    two of twenty and suggests eleven is a good run this phase is designed to
-    produce -- the rest is the list a person then works through.
+    dated, offered, undated. Only the first wrote anything. A run that dates two
+    of twenty and offers eleven is a good run this phase is designed to produce
+    -- the rest is the list a person then works through.
     """
+    try:
+        schedule = _read_schedule(Path(args.schedule)) if args.schedule else None
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
+
     async with async_session() as session:
         try:
-            outcomes = await date_course_from_filenames(
-                session,
-                user_id=SEED_USER_ID,
-                course_id=args.course_id,
-                overwrite=args.overwrite,
-            )
+            if schedule is None:
+                outcomes = await date_course_from_filenames(
+                    session,
+                    user_id=SEED_USER_ID,
+                    course_id=args.course_id,
+                    overwrite=args.overwrite,
+                )
+            else:
+                outcomes = await date_course_from_syllabus(
+                    session,
+                    user_id=SEED_USER_ID,
+                    course_id=args.course_id,
+                    schedule=schedule,
+                    overwrite=args.overwrite,
+                )
         except ServiceError as error:
             print(error, file=sys.stderr)
             return 1
@@ -103,24 +157,28 @@ async def _date_course(args: argparse.Namespace) -> int:
     for outcome in dated:
         print(f"{outcome.occurred_on}  {outcome.source}  {outcome.filename}")
 
-    # Printed as `suggested`, never as a date in the same column as a stored one.
-    # These documents are still undated; the date beside them is an offer.
-    suggested = [outcome for outcome in outcomes if outcome.suggestion]
-    for outcome in suggested:
-        print(
-            f"suggested {outcome.suggestion}  {outcome.filename}  -- {outcome.reason}"
+    # Never printed in the same column as a stored date. These documents are
+    # still undated; the dates beside them are offers. Two of them is a
+    # disagreement between sources that a person has to settle.
+    offered = [outcome for outcome in outcomes if outcome.candidates]
+    for outcome in offered:
+        label = "conflict" if len(outcome.candidates) > 1 else "suggested"
+        dates = " / ".join(
+            f"{candidate.occurred_on} ({candidate.source})"
+            for candidate in outcome.candidates
         )
+        print(f"{label:<10}  {outcome.filename}  {dates}  -- {outcome.reason}")
 
     undated = [
         outcome
         for outcome in outcomes
-        if not outcome.occurred_on and not outcome.suggestion
+        if not outcome.occurred_on and not outcome.candidates
     ]
     for outcome in undated:
         print(f"{'undated':<10}  {outcome.filename}  -- {outcome.reason}")
 
     print(
-        f"\n{len(dated)} dated, {len(suggested)} suggested, {len(undated)} undated, "
+        f"\n{len(dated)} dated, {len(offered)} offered, {len(undated)} undated, "
         f"{len(outcomes)} documents"
     )
     return 0
@@ -250,6 +308,11 @@ def main() -> int:
         "date-course", help="date a course's documents from their filenames"
     )
     dating.add_argument("course_id", type=uuid.UUID)
+    dating.add_argument(
+        "--schedule",
+        help="TSV of `kind<TAB>ordinal<TAB>YYYY-MM-DD` from the course's syllabus. "
+        "Without it, dates come from filenames alone.",
+    )
     dating.add_argument(
         "--overwrite",
         action="store_true",

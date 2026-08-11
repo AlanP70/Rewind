@@ -20,6 +20,7 @@ today rather than a wrapper someone reasonably inlines.
 
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 
@@ -49,15 +50,46 @@ class RedateResult:
 
 
 @dataclass(frozen=True)
+class DateCandidate:
+    """A date that was worked out but deliberately not written, and where it came from.
+
+    Carried as data rather than described in `reason`, because the UI has to
+    offer it as a one-click answer. A conflict explained only in prose is not a
+    signal anything can act on.
+    """
+
+    source: OccurredAtSource
+    occurred_on: date
+
+
+@dataclass(frozen=True)
+class ScheduleEntry:
+    """One dated session from a course's syllabus.
+
+    Structured input on purpose. Turning a syllabus PDF into these is a
+    layout-matching problem that needs real syllabi to build against, and it
+    lands separately; everything downstream of this type is testable today.
+
+    `kind` uses the same vocabulary `read_ordinal` returns -- `lecture`,
+    `recitation`, `pset` -- because that is what the two get joined on.
+    """
+
+    kind: str
+    ordinal: int
+    occurred_on: date
+
+
+@dataclass(frozen=True)
 class DatingOutcome:
-    """What the filename dater decided about one document, and why.
+    """What the dater decided about one document, and why.
 
     Three shapes, and the middle one is the point:
 
       `occurred_on` set   -- a date was written, and `source` says how.
-      `suggestion` set    -- a date was computed and deliberately *not* written.
-                             The document is still undated. `reason` says why it
-                             was only offered.
+      `candidates` set    -- date(s) were worked out and deliberately *not*
+                             written. The document is still undated. One
+                             candidate is an offer; two is a disagreement
+                             between sources that a person has to settle.
       neither set         -- nothing was found. `reason` says what was missing.
 
     `reason` is filled in exactly when `occurred_on` is `None`, which covers both
@@ -70,7 +102,7 @@ class DatingOutcome:
     filename: str
     occurred_on: date | None = None
     source: OccurredAtSource | None = None
-    suggestion: date | None = None
+    candidates: tuple[DateCandidate, ...] = ()
     reason: str = ""
 
 
@@ -92,7 +124,7 @@ async def date_course_from_filenames(
     ordinal range places the highest lecture uploaded on the last day of term, so
     a student who uploads 11 of 20 lectures gets lecture 11 dated in May.
 
-    So an ordinal produces a `suggestion` on the outcome and no write. Extraction
+    So an ordinal produces a `candidate` on the outcome and no write. Extraction
     is reliable and ordering is reliable; the date is not, and a
     confidently-weeks-wrong date rendered in a timeline is worse than an honest
     blank. The candidate is still computed, so the UI can offer it for one-click
@@ -224,7 +256,12 @@ async def date_course_from_filenames(
                     DatingOutcome(
                         document_id=document.id,
                         filename=_filename(document),
-                        suggestion=suggestion,
+                        candidates=(
+                            DateCandidate(
+                                source=OccurredAtSource.INFERRED_FILENAME,
+                                occurred_on=suggestion,
+                            ),
+                        ),
                         reason=(
                             f"{kind} {number} of {min(numbers)}..{max(numbers)}; "
                             f"interpolated, so offered rather than stored"
@@ -234,6 +271,137 @@ async def date_course_from_filenames(
             continue
 
         outcomes.append(_undated(document, "no date or lecture number in the filename"))
+
+    return outcomes
+
+
+async def date_course_from_syllabus(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    course_id: uuid.UUID,
+    schedule: Sequence[ScheduleEntry],
+    overwrite: bool = False,
+) -> list[DatingOutcome]:
+    """Date a course's documents from its syllabus schedule.
+
+    **The join is on the ordinal, not on topic text.** A syllabus gives an
+    ordered, dated session list; a filename gives a session number. Matching
+    `lecture 7` to `lecture 7` is exact, and slice 2 measured ordinal extraction
+    on 70 real filenames at 58 correct / 12 undated / **0 wrong**. Matching a
+    syllabus topic against a document's prose would be a similarity score --
+    a new heuristic, with a new unmeasured error, replacing one that is already
+    measured. There is no reason to take that trade.
+
+    This is also what repairs slice 2's weak spot. Filename inference had to
+    guess where lecture 7 fell by spreading ordinals across the term, which fails
+    by weeks and is why those dates are offered rather than stored. A syllabus
+    states the date outright, so the same ordinal that could only produce a
+    suggestion now produces a fact -- `parsed_syllabus`, written.
+
+    **Where the syllabus and the filename disagree, neither is stored.** A
+    filename saying `2020-02-13` and a syllabus saying `2020-02-11` are two
+    sources of testimony in genuine conflict: syllabi are published in advance
+    and classes get moved, so the schedule is not automatically right, and a
+    student's filename is not automatically right either. Both are returned as
+    `candidates` for a person to settle in one click. Picking silently is exactly
+    the failure this phase exists to prevent, and picking silently is *worse*
+    here than having no date, because the conflict is evidence that one of the
+    two sources is unreliable for this whole course.
+    """
+    course = await courses_repo.get(session, course_id, user_id)
+    if course is None:
+        raise NotFoundError(f"no course {course_id}")
+
+    dates: dict[tuple[str, int], date] = {}
+    for entry in schedule:
+        key = (entry.kind, entry.ordinal)
+        if dates.setdefault(key, entry.occurred_on) != entry.occurred_on:
+            # A syllabus that dates lecture 7 twice, differently, cannot be
+            # silently half-applied -- whichever row won would depend on order.
+            raise ServiceError(
+                f"the schedule gives {entry.kind} {entry.ordinal} two dates: "
+                f"{dates[key]} and {entry.occurred_on}"
+            )
+
+    documents = await documents_repo.list_for_course(
+        session, course_id=course_id, user_id=user_id
+    )
+
+    outcomes: list[DatingOutcome] = []
+    for document in documents:
+        if document.occurred_at_source == OccurredAtSource.MANUAL:
+            outcomes.append(_undated(document, "dated by hand"))
+            continue
+        if document.occurred_at is not None and not overwrite:
+            outcomes.append(_undated(document, "already dated"))
+            continue
+
+        name = _filename(document)
+        ordinal = filename_dates.read_ordinal(name)
+        scheduled = dates.get(ordinal) if ordinal else None
+        stated = filename_dates.read_explicit_date(
+            name, starts_on=course.starts_on, ends_on=course.ends_on
+        )
+
+        if scheduled and stated and scheduled != stated:
+            outcomes.append(
+                DatingOutcome(
+                    document_id=document.id,
+                    filename=name,
+                    candidates=(
+                        DateCandidate(
+                            source=OccurredAtSource.PARSED_SYLLABUS,
+                            occurred_on=scheduled,
+                        ),
+                        DateCandidate(
+                            source=OccurredAtSource.FILENAME_DATE, occurred_on=stated
+                        ),
+                    ),
+                    reason=(
+                        f"the syllabus says {scheduled} but the filename says "
+                        f"{stated}; not stored until someone decides"
+                    ),
+                )
+            )
+            continue
+
+        if scheduled:
+            occurred_on, source = scheduled, OccurredAtSource.PARSED_SYLLABUS
+        elif stated:
+            occurred_on, source = stated, OccurredAtSource.FILENAME_DATE
+        elif ordinal:
+            kind, number = ordinal
+            outcomes.append(
+                _undated(document, f"the syllabus has no {kind} {number}")
+            )
+            continue
+        else:
+            outcomes.append(
+                _undated(document, "no date or lecture number in the filename")
+            )
+            continue
+
+        try:
+            await redate_document(
+                session,
+                user_id=user_id,
+                document_id=document.id,
+                occurred_on=occurred_on,
+                source=source,
+            )
+        except ServiceError as error:
+            outcomes.append(_undated(document, str(error)))
+            continue
+
+        outcomes.append(
+            DatingOutcome(
+                document_id=document.id,
+                filename=name,
+                occurred_on=occurred_on,
+                source=source,
+            )
+        )
 
     return outcomes
 

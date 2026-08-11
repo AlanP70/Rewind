@@ -113,6 +113,26 @@ is reliable, the date is not; that asymmetry is the whole point of
 `occurred_at_source`. Every ambiguous branch resolves to undated, and a hand-set
 date is never overwritten, including under `--overwrite`.
 
+Slice 3 landed **half** of syllabus dating, on purpose. `date_course_from_syllabus`
+takes a `Sequence[ScheduleEntry]`, not a PDF — everything downstream of that type
+is the phase's real subject and is testable today; everything upstream is layout
+matching, and **no real syllabus existed to build against.** Writing a parser
+against an invented format and measuring it on that same invention produces a
+number that looks like evidence and isn't. The parser waits on two or three real
+syllabi from different schools in `test-data/`. **The join is on the ordinal, not
+on topic text**, because ordinal extraction is already measured at 0 wrong and
+topic similarity would swap a measured error for an unmeasured one. This repairs
+slice 2's weak spot: the same ordinal that could only be interpolated now resolves
+to a stated date, so `parsed_syllabus` finally has a writer. **Where the syllabus
+and the filename disagree, neither is stored** — both come back as `candidates`
+(which replaced `suggestion`, since one candidate is an offer and two is a
+disagreement), because there is no principled tiebreak between two pieces of
+testimony and the disagreement is itself evidence about the whole course. There is
+**no interpolation fallback** when the syllabus lacks an ordinal. A schedule that
+dates one session twice, differently, is rejected before anything is written; a
+repeated identical row is fine. The conflict test was **mutation-checked** — a
+test that has never failed is a claim, not a guard.
+
 **Decision, load-bearing for the rest of the phase: `inferred_filename` does not
 write `occurred_at`.** `date_course_from_filenames` stores only `filename_date`
 — a date the filename states — and returns an interpolated date as a

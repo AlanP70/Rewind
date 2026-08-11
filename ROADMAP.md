@@ -1179,8 +1179,8 @@ pinned by a test.
 candidate.**
 
 `date_course_from_filenames` writes only `filename_date`, the date a filename
-states outright. An interpolated date is returned as a `suggestion` on the
-outcome; the document stays undated in the database.
+states outright. An interpolated date is returned as a `DateCandidate` in the
+outcome's `candidates`; the document stays undated in the database.
 
 The reasoning is the two paragraphs above taken seriously. Extraction is
 measured and reliable, ordering is reliable by construction, and the date is
@@ -1258,6 +1258,74 @@ three-statement transaction the missing `ON DELETE CASCADE` forces (chunks, runs
 documents, course) — friction confirmed as real, though a one-off cleanup script
 is not the "first code path that deletes a `documents` row" that item waits for.
 Suite is 113 tests, 40 of them new.
+
+### Settled in slice 3 (syllabus dating, layout-independent half)
+
+**The slice was deliberately split, and only half of it was built.**
+`date_course_from_syllabus` takes a `Sequence[ScheduleEntry]` — `kind`,
+`ordinal`, `occurred_on` — rather than a PDF. Everything downstream of that type
+is the phase's actual subject matter: the join, the conflict policy, the funnel,
+the honesty rules. Everything upstream is layout matching, and **no real syllabus
+existed to build it against.** Writing a parser against an invented format and
+then measuring it on that same invented format produces a number that looks like
+evidence and is not — the same reasoning that kept `quiz` and `review` out of the
+keyword map after slice 2's corpus was measured. The parser lands when two or
+three real syllabi from different schools are in `test-data/`; one example means
+building against one school's quirks.
+
+**The join is on the ordinal, not on topic text.** A syllabus gives an ordered,
+dated session list; a filename gives a session number. `lecture 7` to `lecture 7`
+is exact, and ordinal extraction is already measured at 0 wrong. Matching a
+syllabus topic against a document's prose would be a similarity score — a new
+heuristic with a new unmeasured error rate, substituted for one that has been
+measured. There is no version of that trade worth taking.
+
+This is also what repairs slice 2's weak spot rather than working around it.
+Interpolation had to guess where lecture 7 fell by spreading ordinals across the
+term, which fails by weeks and is why those dates are offered rather than stored.
+A syllabus states the date outright, so **the same ordinal that could only
+produce a suggestion now produces a fact** — `parsed_syllabus`, written. The
+enum's top value finally has a writer.
+
+**Where the syllabus and the filename disagree, neither is stored.** Both come
+back as `candidates` for a person to settle. Syllabi are published in advance and
+classes get moved, so the schedule is not automatically right; a student's
+filename is not automatically right either. There is no principled tiebreak
+between two pieces of testimony, and picking one silently is *worse* here than
+having no date at all — the disagreement is evidence that one of the two sources
+is unreliable for this whole course, and resolving it quietly throws that
+evidence away. Agreement is not a conflict: two sources saying the same thing is
+the good case and writes `parsed_syllabus`.
+
+That conflict path is why `DatingOutcome.suggestion` became
+`candidates: tuple[DateCandidate, ...]`, carrying its source with each date. One
+candidate is an offer, two is a disagreement. A conflict described only in
+`reason` prose is not something a UI can turn into a one-click answer.
+
+**No interpolation fallback when the syllabus is silent about an ordinal.**
+`lec9.pdf` against a schedule with no lecture 9 stays undated with a reason, and
+does not quietly fall back to spreading ordinals across the term. A syllabus
+being present does not make that guess any better than slice 2 measured it to be.
+A filename that states a date outright is still used where the syllabus says
+nothing — a guest lecture keeps its `filename_date`.
+
+**A schedule that dates one session twice, differently, is rejected outright**
+with `ServiceError` before anything is written, because whichever row won would
+depend on iteration order, and that is not a decision anyone made. A repeated
+*identical* row is accepted — only a contradiction is an error. An out-of-term
+schedule date is refused by the funnel and reported as an undated outcome, not
+raised, so one bad row cannot take the other nineteen documents down with it.
+
+Both dating paths share the eligibility rules, including `manual` outranking
+everything under `--overwrite`. A `parsed_syllabus` date *does* replace an
+`inferred_filename` one under `--overwrite` — that is the upgrade path, a guess
+becoming a fact, with `occurred_at_source` moving with it.
+
+12 new tests; suite is 125. The conflict test was mutation-checked — with the
+disagreement branch disabled, the syllabus date is silently stored and the test
+fails — because a test that has never failed is a claim, not a guard. Same
+discipline as `verify`'s fault injection in Phase 1 and the two tests proving
+slice 1's AST guard can fail.
 
 ---
 

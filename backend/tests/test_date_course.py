@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Course, OccurredAtSource
 from app.models.user import SEED_USER_ID
 from app.repositories import documents as documents_repo
-from app.services.dating import date_course_from_filenames, redate_document
+from app.services.dating import (
+    DateCandidate,
+    date_course_from_filenames,
+    redate_document,
+)
 from app.services.errors import NotFoundError
 from app.services.ingestion import create_course
 
@@ -66,9 +70,9 @@ async def test_ordinals_are_spread_across_the_term(
         session, user_id=SEED_USER_ID, course_id=course.id
     )
 
-    assert by_name(outcomes, "lec1.pdf").suggestion == STARTS_ON
-    assert by_name(outcomes, "lec11.pdf").suggestion == ENDS_ON
-    assert by_name(outcomes, "lec6.pdf").suggestion == date(2020, 3, 24)
+    assert by_name(outcomes, "lec1.pdf").candidates[0].occurred_on == STARTS_ON
+    assert by_name(outcomes, "lec11.pdf").candidates[0].occurred_on == ENDS_ON
+    assert by_name(outcomes, "lec6.pdf").candidates[0].occurred_on == date(2020, 3, 24)
 
 
 @pytest.mark.asyncio
@@ -91,7 +95,9 @@ async def test_an_interpolated_date_is_offered_and_never_stored(
     )
 
     offered = by_name(outcomes, "lec1.pdf")
-    assert offered.suggestion == STARTS_ON
+    assert offered.candidates[0] == DateCandidate(
+        source=OccurredAtSource.INFERRED_FILENAME, occurred_on=STARTS_ON
+    )
     assert offered.occurred_on is None
     assert offered.source is None
 
@@ -135,9 +141,9 @@ async def test_two_sequences_do_not_share_a_range(
         session, user_id=SEED_USER_ID, course_id=course.id
     )
 
-    assert by_name(outcomes, "r01.pdf").suggestion == STARTS_ON
-    assert by_name(outcomes, "r03.pdf").suggestion == ENDS_ON
-    assert by_name(outcomes, "lec20.pdf").suggestion == ENDS_ON
+    assert by_name(outcomes, "r01.pdf").candidates[0].occurred_on == STARTS_ON
+    assert by_name(outcomes, "r03.pdf").candidates[0].occurred_on == ENDS_ON
+    assert by_name(outcomes, "lec20.pdf").candidates[0].occurred_on == ENDS_ON
 
 
 @pytest.mark.asyncio
@@ -254,15 +260,15 @@ async def test_a_suggestion_is_recomputed_every_run(
     first = await date_course_from_filenames(
         session, user_id=SEED_USER_ID, course_id=course.id
     )
-    assert by_name(first, "lec9.pdf").suggestion == ENDS_ON
+    assert by_name(first, "lec9.pdf").candidates[0].occurred_on == ENDS_ON
 
     await add(session, course, "lec20.pdf")
     second = await date_course_from_filenames(
         session, user_id=SEED_USER_ID, course_id=course.id
     )
 
-    assert by_name(second, "lec9.pdf").suggestion == date(2020, 3, 16)
-    assert by_name(second, "lec20.pdf").suggestion == ENDS_ON
+    assert by_name(second, "lec9.pdf").candidates[0].occurred_on == date(2020, 3, 16)
+    assert by_name(second, "lec20.pdf").candidates[0].occurred_on == ENDS_ON
 
 
 @pytest.mark.asyncio
