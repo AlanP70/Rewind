@@ -1327,6 +1327,195 @@ fails — because a test that has never failed is a claim, not a guard. Same
 discipline as `verify`'s fault injection in Phase 1 and the two tests proving
 slice 1's AST guard can fail.
 
+### Settled in slice 4 (the syllabus parser)
+
+`app/services/syllabus_schedule.py` — pure, text pages in and `ScheduleEntry`
+rows out, no PDF and no session, for slice 2's reason. `ScheduleEntry` moved here
+from `dating.py`, since the module that produces a type should own it;
+`dating.py` gains `parse_course_syllabus`, two lines of orchestration that fetch
+the course for its term bounds, and `date-course --syllabus <pdf>` makes the
+slice runnable.
+
+**Two worked examples, one positive and one negative. Not a hit rate, and it must
+not drift into being written up as one.** Slice 2's 58/12/0 was a measurement
+because 70 labelled filenames is a sample. Two syllabi are not. What they do
+establish is the claim the parser is built on: the layout it reads exists in the
+wild, and so does one it cannot. That is the evidence slice 3 was waiting for,
+and it is why nothing was built against an invented format.
+
+Both fixtures are committed as whole extracted documents rather than trimmed to
+the schedule page, so the parser has to find the table among everything else, and
+a test re-extracts the real PDFs and compares. A fixture nobody re-derives from
+its source drifts into being an invention.
+
+**One layout is recognised; everything else is reported as unrecognised.** A
+*linear* schedule — one session per row, ordinal and date on the same line —
+survives `extract_text` because the row *is* the line. A *calendar grid* does
+not: York's flattens into a run of dates (`12 13 14 15 16`) and a run of labels
+(`Lecture 3 Lecture 4 Tutorial 2`), three labels against five columns, with the
+mapping between them left behind in the cell geometry. Nothing short of re-reading
+the PDF's word coordinates recovers it, so the parser says so and dates nothing.
+The refusal is the deliverable: a plausible guess at a grid would be wrong by
+days, for every lecture in the course, with nothing in the output revealing it.
+
+**The acceptance rule is one sentence and does three jobs: a schedule is the
+longest run of consecutive rows whose ordinals and dates both strictly
+increase.** It finds the table among the rest of the document, it separates a
+syllabus holding more than one dated list (the longer wins; they are not merged
+into a series counting 1, 2, 1, 2), and it is the accept/reject test. A grid
+produces no such run because the lines with dates have no ordinal and the lines
+with ordinals have no date. Below three rows there is no schedule — two lines
+beginning with a number and a date occur in ordinary prose.
+
+Runs are of *rows*, not lines, which is why Waterloo's wrapped topics need no
+handling at all. Its longer topics straddle their row — the first line of the
+topic sits above `(9) Nov 08` and the rest below it — and none of it matters,
+because the join is on the ordinal and topic text is never read. Layout that
+would defeat a topic-matching parser is invisible to this one. That is slice 3's
+join decision paying out a second time.
+
+**Ordinals are read, never counted — and this is the design choice most likely to
+be undone by someone who does not know why it is there.** The number comes from
+the row's own text, so Waterloo's two unnumbered `(-)` rows (reading week, and a
+spare week after the last topic) can be dropped without disturbing anything.
+Numbering rows by position instead is the obvious implementation, produces an
+*identical* result on any schedule without gaps, and on this one gives reading
+week the number 6 — pushing weeks 6 through 12 back by seven days each, so every
+date from mid-October to the end of term is wrong. Uniformly, plausibly, and
+invisibly: the output looks exactly as orderly as the correct one. This phase's
+failure mode in miniature.
+
+**The first test of that property could not fail, which is the slice's tooling
+lesson.** Asserting against the real fixture looked like the strongest possible
+test — real syllabus, real reading week — and it was worthless for this, because
+ECE 606's weeks run 1..12 with no gaps and positional numbering yields the same
+twelve numbers. Confirmed by mutation: the positional version passed. The guard
+is now a synthetic schedule numbered 1, 2, 4, 5, where the two implementations
+differ, plus a real-data test that reading week consumes no number. Six tests
+fail under the mutation now.
+
+Generalised, and a peer of the two lessons above it. The mechanism, which is the
+part worth keeping:
+
+**A fixture guards a property only if the wrong implementation would produce a
+different answer on that fixture.** Nothing else about it matters — not its
+provenance, not its size, not how faithfully it represents production. A test
+over real data that both implementations satisfy is not a weak guard, it is not a
+guard at all, and it fails silently in the direction that never gets
+investigated: green.
+
+**Regular material is precisely where an off-by-one has nothing to catch it.**
+Real timetables number 1..12 without gaps, real invoices are sequential, real
+pagination starts at 1 — regularity is what makes real data *look* like the
+strongest available input, and it is the exact structural property that collapses
+the difference between counting and reading. The more typical the fixture, the
+more likely the two implementations agree on it.
+
+**And realism reads as rigor, which is why it goes unexamined.** "Tested against
+a real syllabus with a real reading week" is a sentence that ends a review. It
+sounds like the strongest possible claim, so nobody asks the only question that
+matters, which is what the wrong version would have returned here. That is the
+same shape as slice 1's finding — the cheap repair that looks like diligence — and
+slice 2's — the comparison that reads correctly and does nothing.
+
+**The lesson is not "add synthetic data too."** Synthetic cases are how this
+particular property got covered, but a synthetic fixture chosen without asking the
+discriminating question is just as blind. The discipline is the question: *what
+does the plausible wrong implementation return on this input?* If the answer is
+"the same thing", the test is documentation, and something else has to carry the
+guard.
+
+**A schedule that never says what it numbers is refused, not assumed to be
+lectures.** Waterloo's rows are bare `(1)`, `(2)`; the unit comes from the `Week
+of` column header above them, found by searching a short window of lines up from
+the first row. The unit decides which documents can join at all, so guessing it
+wrong dates the whole course from the wrong row, and `lecture` is the guess most
+likely to look right while being wrong — weekly schedules are common, and a week
+is not a lecture. Rows that name their own unit (`Lecture 3 Sep 20`) win over the
+header, and rows that disagree with each other are refused rather than resolved
+by whichever a set yields first.
+
+The date must follow the ordinal *immediately* — `read_leading_date` is anchored
+where `read_explicit_date` searches. `(3) Properties of algorithms, moved from
+Sep 20` would otherwise date session 3 to the one day the sentence rules out.
+
+**`read_leading_date` and `kind_for` live in `filename_dates.py`, not here**,
+despite neither being filename-shaped. Both sides of the join need one session
+vocabulary and one month table, and a second copy of either fails in the worst
+available way: `week` against `weeks` joins nothing and reads as a syllabus that
+mentions no sessions, and a divergent month table yields a wrong date rather than
+a crash.
+
+**Decision — a weekly schedule dates weeks, and is never converted into
+lectures.**
+
+Waterloo's schedule is headed `Week of`, so `(3) Sep 20` is the week beginning
+September 20th. The parser emits `kind="week"`, and the join then misses for
+`lecture-07.pdf` and hits exactly for `week-03-notes.pdf`. A weekly schedule is
+not discarded — it dates what it actually numbers.
+
+A course with two lectures a week has lectures 5 and 6 inside week 3, so the join
+is not 1:1, and closing that gap needs a lectures-per-week figure that appears in
+neither the syllabus nor the filenames. Deriving it by dividing uploaded lectures
+by weeks assumes the student uploaded every lecture — the assumption slice 2
+measured going wrong by weeks.
+
+**The decisive objection is the column, not the arithmetic.** A date reached that
+way would be stored with `occurred_at_source = parsed_syllabus`, which means *the
+syllabus stated this date*, when the syllabus stated no such thing. That is a
+false claim in the one field this phase exists to keep honest, and it is worse
+than slice 2's interpolation, which at least carried a provenance value admitting
+it was a guess. A wrong date is recoverable; a wrong date wearing the strongest
+provenance the enum has is not, because nothing downstream has any reason to
+doubt it.
+
+The strongest counter-argument, taken seriously and rejected: a week *does* bound
+a lecture to seven days, far tighter than interpolation's weeks of drift, so
+offering it as a candidate looks nearly free. It is not — knowing *which* week
+requires the same missing figure, so the bound is only ever as good as the guess
+that selects it, and nothing is gained over saying nothing.
+
+**Reversal conditions, stated as conditions rather than a phase** — the same
+correction made to the `ON DELETE CASCADE` item, for the same reason: a phase
+number comes due whether or not the thing it was really about has happened.
+Either would reverse this:
+
+1. **A lectures-per-week on `courses`, entered by a person.** Week-to-lecture then
+   becomes arithmetic over stated facts, and `parsed_syllabus` stays true.
+2. **Filenames that carry the weekday**, which resolve a lecture to a day within
+   its week without any per-course figure.
+
+Specifically not an inference of that figure from the files present, which is the
+guess this rejects.
+
+Reported honestly to the user instead: the outcome's reason names the granularity
+mismatch rather than saying `the syllabus has no lecture 7`, which would send
+someone hunting for a row that was never supposed to exist. Both readings leave
+the document undated, which is exactly why the wrong wording would go unnoticed,
+so it has its own test.
+
+Three guards were mutation-checked, since a test that has never failed is a
+claim: positional numbering (6 failures), a searching rather than anchored date
+(1), and defaulting the unit to `lecture` (1).
+
+16 new parser tests and 3 new dating tests; **suite is 144, all passing**,
+including slice 1's AST guard and slice 2's 58/12/0 corpus, both unchanged.
+
+**Deferred, with reasons:**
+
+- **`tutorial` is not in the session-kind vocabulary.** Found while writing these
+  tests — York schedules tutorials and `read_ordinal` would not recognise
+  `tutorial-3.pdf`. Adding keywords after seeing the material is what slice 2
+  declined to do with `quiz` and `review`, and the same applies: it belongs to a
+  measurement, not to this slice.
+- **Word-coordinate extraction for calendar grids.** `pdfplumber` exposes the
+  geometry the flattened text loses, so a grid is not unrecoverable in principle
+  — only unrecoverable from the text, which is what this parser reads. It is a
+  different parser, and it needs more than one grid syllabus to build against.
+- **More than one schedule table in a document** is handled only by longest-run.
+  A syllabus with two genuine session series would need to emit both, and none
+  has been seen.
+
 ---
 
 ## Phase 4 — Retrieval + timeline (the demo)

@@ -19,14 +19,15 @@ from app.core.storage import get_storage, storage_key
 from app.models.user import SEED_USER_ID
 from app.schemas.ingestion import PlannedChunk
 from app.services.dating import (
-    ScheduleEntry,
     date_course_from_filenames,
     date_course_from_syllabus,
+    parse_course_syllabus,
 )
 from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
 from app.services.ingestion import create_course, plan_chunks
 from app.services.processing import embed_with_estimate, process_document
+from app.services.syllabus_schedule import ScheduleEntry
 from app.services.verification import verify_document
 
 
@@ -82,10 +83,11 @@ async def _create_course(args: argparse.Namespace) -> int:
 def _read_schedule(path: Path) -> list[ScheduleEntry]:
     """Read a schedule from a TSV: `kind<TAB>ordinal<TAB>YYYY-MM-DD`.
 
-    A stand-in for the syllabus parser, which needs real syllabi to build
-    against and lands separately. It is not throwaway: hand-transcribing a real
-    syllabus into this format is how that parser gets a ground truth to be
-    measured against, the same way slice 2's filename corpus works.
+    Kept now that `--syllabus` parses PDFs, because it is how a syllabus the
+    parser reports as unrecognised still gets used: someone transcribes the dozen
+    rows by hand and the course is dated. It is also how a parsed schedule gets a
+    ground truth to be measured against, the same way slice 2's filename corpus
+    works.
 
     Every error names its line. A schedule silently missing a row dates fewer
     documents and looks like the heuristic being cautious.
@@ -114,8 +116,14 @@ def _read_schedule(path: Path) -> list[ScheduleEntry]:
 async def _date_course(args: argparse.Namespace) -> int:
     """Date a course's documents, and print what it could not.
 
-    With `--schedule` the dates come from the syllabus and the filename supplies
-    only the session number; without it, from filenames alone.
+    With `--syllabus` or `--schedule` the dates come from the syllabus and the
+    filename supplies only the session number; without either, from filenames
+    alone.
+
+    An unreadable syllabus stops the run instead of falling through to filenames.
+    Someone who passed `--syllabus` asked for those dates, and quietly giving them
+    the weaker source under the same command is how a course ends up full of
+    `inferred_filename` suggestions that were supposed to be facts.
 
     No `session.begin()` here, unlike every other command: `redate_document` owns
     its own transaction and commits per document, so wrapping the batch would
@@ -126,11 +134,37 @@ async def _date_course(args: argparse.Namespace) -> int:
     of twenty and offers eleven is a good run this phase is designed to produce
     -- the rest is the list a person then works through.
     """
-    try:
-        schedule = _read_schedule(Path(args.schedule)) if args.schedule else None
-    except ValueError as error:
-        print(error, file=sys.stderr)
-        return 1
+    schedule: list[ScheduleEntry] | None = None
+
+    if args.syllabus:
+        path = Path(args.syllabus)
+        if not path.is_file():
+            print(f"no such file: {path}", file=sys.stderr)
+            return 1
+        async with async_session() as session:
+            try:
+                parsed = await parse_course_syllabus(
+                    session,
+                    user_id=SEED_USER_ID,
+                    course_id=args.course_id,
+                    data=path.read_bytes(),
+                    name=path.name,
+                )
+            except ServiceError as error:
+                print(error, file=sys.stderr)
+                return 1
+        if not parsed.entries:
+            print(f"{path.name}: {parsed.reason}", file=sys.stderr)
+            return 1
+        skipped = f", {parsed.skipped} unnumbered row(s) skipped" if parsed.skipped else ""
+        print(f"{path.name}: {len(parsed.entries)} {parsed.unit}s{skipped}")
+        schedule = list(parsed.entries)
+    elif args.schedule:
+        try:
+            schedule = _read_schedule(Path(args.schedule))
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 1
 
     async with async_session() as session:
         try:
@@ -308,10 +342,20 @@ def main() -> int:
         "date-course", help="date a course's documents from their filenames"
     )
     dating.add_argument("course_id", type=uuid.UUID)
-    dating.add_argument(
+    # One source or the other. Both would need a rule for which wins, and the two
+    # exist precisely because the parser cannot read every syllabus -- the TSV is
+    # the manual answer to a PDF it refused.
+    from_syllabus = dating.add_mutually_exclusive_group()
+    from_syllabus.add_argument(
+        "--syllabus",
+        help="the course's syllabus as a PDF. Reads its schedule, or reports the "
+        "format as unrecognized and stops.",
+    )
+    from_syllabus.add_argument(
         "--schedule",
-        help="TSV of `kind<TAB>ordinal<TAB>YYYY-MM-DD` from the course's syllabus. "
-        "Without it, dates come from filenames alone.",
+        help="TSV of `kind<TAB>ordinal<TAB>YYYY-MM-DD` from the course's syllabus, "
+        "for a syllabus `--syllabus` cannot read. Without either, dates come from "
+        "filenames alone.",
     )
     dating.add_argument(
         "--overwrite",

@@ -133,6 +133,45 @@ dates one session twice, differently, is rejected before anything is written; a
 repeated identical row is fine. The conflict test was **mutation-checked** — a
 test that has never failed is a claim, not a guard.
 
+Slice 4 landed the parser: `services/syllabus_schedule.py`, pure over extracted
+page text, plus `parse_course_syllabus` and `date-course --syllabus`.
+`ScheduleEntry` moved into that module. **A schedule is the longest run of
+consecutive rows whose ordinals and dates both strictly increase** — one rule that
+finds the table, separates a second dated list, and decides accept/reject. It
+reads Waterloo's ECE 606 (12 weeks, reading week skipped) and reports York's
+EECS 3101 calendar grid as unrecognized, because the date-to-lecture mapping lived
+in cell geometry that `extract_text()` discards. **Two worked examples, one
+positive and one negative — not a hit rate, and it must not be written up as
+one.** Wrapped rows need no handling at all: runs are of rows, not lines, and
+topic text is never read.
+
+**Ordinals are read, never counted.** Numbering rows by position is the obvious
+implementation, gives an identical result on any gap-free schedule, and hands
+reading week the number 6 — pushing every date after mid-October back a week,
+uniformly and invisibly. The first test of this **could not fail** (ECE 606 runs
+1..12, so both implementations agree on it); the guard is now a synthetic
+1, 2, 4, 5 schedule. Generalised in ROADMAP as a peer of the other two
+silent-failure lessons, and the mechanism is the part that matters: **a fixture
+guards a property only if the wrong implementation would answer differently on
+that fixture.** Regular material — 1..12, no gaps — is precisely where an
+off-by-one has nothing to catch it, and realism reads as rigor, so the claim
+"tested against a real syllabus" ends a review instead of starting one. **Not a
+rule to prefer synthetic data**; the rule is to ask what the plausible wrong
+implementation returns on this input, and if it is the same thing, the test is
+documentation.
+
+**A weekly schedule dates weeks and is never converted into lectures.** `(3) Sep
+20` under a `Week of` header is a week; week 3 of a twice-weekly course holds
+lectures 5 and 6, and closing that gap needs a lectures-per-week figure stated
+nowhere. The decisive objection is the column, not the arithmetic: such a date
+would be stored as `parsed_syllabus` — *the syllabus stated this* — when it stated
+nothing of the kind, which is worse than slice 2's interpolation because it wears
+the strongest provenance the enum has. Week-numbered files still join exactly.
+**Reversal conditions, not a phase:** a lectures-per-week on `courses` entered by
+a person, or filenames carrying weekdays. Not an inference of that figure from the
+files present. A schedule that never says what it numbers is **refused, not
+assumed to be lectures**. Suite is 144, all passing.
+
 **Decision, load-bearing for the rest of the phase: `inferred_filename` does not
 write `occurred_at`.** `date_course_from_filenames` stores only `filename_date`
 — a date the filename states — and returns an interpolated date as a

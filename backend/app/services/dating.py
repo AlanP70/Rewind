@@ -31,6 +31,8 @@ from app.repositories import courses as courses_repo
 from app.repositories import documents as documents_repo
 from app.services import filename_dates
 from app.services.errors import NotFoundError, ServiceError
+from app.services.extraction import extract_pages
+from app.services.syllabus_schedule import ParsedSchedule, ScheduleEntry, parse_schedule
 
 logger = logging.getLogger("app")
 
@@ -59,23 +61,6 @@ class DateCandidate:
     """
 
     source: OccurredAtSource
-    occurred_on: date
-
-
-@dataclass(frozen=True)
-class ScheduleEntry:
-    """One dated session from a course's syllabus.
-
-    Structured input on purpose. Turning a syllabus PDF into these is a
-    layout-matching problem that needs real syllabi to build against, and it
-    lands separately; everything downstream of this type is testable today.
-
-    `kind` uses the same vocabulary `read_ordinal` returns -- `lecture`,
-    `recitation`, `pset` -- because that is what the two get joined on.
-    """
-
-    kind: str
-    ordinal: int
     occurred_on: date
 
 
@@ -275,6 +260,36 @@ async def date_course_from_filenames(
     return outcomes
 
 
+async def parse_course_syllabus(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    course_id: uuid.UUID,
+    data: bytes,
+    name: str,
+) -> ParsedSchedule:
+    """Read a syllabus PDF into a schedule, against its course's term.
+
+    Two lines of orchestration and nothing else -- the course supplies the term
+    that fills in the years a schedule omits, and `parse_schedule` does the work.
+    It is a service rather than four lines in the CLI because the parser is pure
+    and the term is in the database, and that seam belongs on this side of the
+    boundary rather than in every entrypoint that grows one.
+
+    Writes nothing. A parsed schedule still has to go through
+    `date_course_from_syllabus` to become dates.
+    """
+    course = await courses_repo.get(session, course_id, user_id)
+    if course is None:
+        raise NotFoundError(f"no course {course_id}")
+
+    return parse_schedule(
+        extract_pages(data, name=name),
+        starts_on=course.starts_on,
+        ends_on=course.ends_on,
+    )
+
+
 async def date_course_from_syllabus(
     session: AsyncSession,
     *,
@@ -312,6 +327,10 @@ async def date_course_from_syllabus(
     course = await courses_repo.get(session, course_id, user_id)
     if course is None:
         raise NotFoundError(f"no course {course_id}")
+
+    # What the schedule numbers, taken from the entries themselves rather than
+    # passed in, so a caller cannot describe a schedule as something it is not.
+    units = {entry.kind for entry in schedule}
 
     dates: dict[tuple[str, int], date] = {}
     for entry in schedule:
@@ -372,9 +391,7 @@ async def date_course_from_syllabus(
             occurred_on, source = stated, OccurredAtSource.FILENAME_DATE
         elif ordinal:
             kind, number = ordinal
-            outcomes.append(
-                _undated(document, f"the syllabus has no {kind} {number}")
-            )
+            outcomes.append(_undated(document, _no_such_session(kind, number, units)))
             continue
         else:
             outcomes.append(
@@ -414,6 +431,46 @@ def _filename(document: Document) -> str:
     The key is the one place the original name survives intact.
     """
     return document.storage_key.rsplit("/", 1)[-1]
+
+
+def _no_such_session(kind: str, number: int, units: set[str]) -> str:
+    """Why an ordinal found nothing: a missing row, or a different unit entirely.
+
+    **A schedule numbering weeks does not join to filenames numbering lectures,
+    and is not converted so that it does.** Waterloo's schedule is headed `Week
+    of`, so `(3) Sep 20` means the week beginning September 20th. A course with
+    two lectures a week has lectures 5 and 6 inside week 3, and turning one into
+    the other needs a lectures-per-week figure that appears nowhere -- not in the
+    syllabus, not in the filenames, and derivable from the upload only by
+    assuming the student uploaded every lecture, which is the assumption slice 2
+    measured going wrong by weeks.
+
+    The decisive objection is what it would do to `occurred_at_source`. A date
+    reached that way would be stored as `parsed_syllabus`, meaning *the syllabus
+    stated this date*, when the syllabus stated no such thing. That is a false
+    claim in the one column this phase exists to keep honest, and it is worse
+    than the interpolation slice 2 declined to store, because it would carry the
+    strongest provenance value the enum has.
+
+    A week does bound a lecture to seven days, which is tighter than
+    interpolation manages, so an offered candidate looks tempting. It needs the
+    same missing figure to know *which* week, so the bound is only ever as good
+    as the guess that picks it and nothing is gained.
+
+    **What would reverse this:** a lectures-per-week on `courses` that a person
+    enters, making week-to-lecture arithmetic over stated facts, or filenames
+    carrying weekdays. Not an inference of that figure from the files present.
+
+    So the join misses, and this says why it missed. Reporting a weekly schedule
+    as `the syllabus has no lecture 7` would send someone looking for a row that
+    was never supposed to be there.
+    """
+    if len(units) == 1 and (unit := next(iter(units))) != kind:
+        return (
+            f"the syllabus numbers {unit}s and this filename numbers {kind}s; "
+            f"one {unit} can hold several {kind}s and nothing states how many"
+        )
+    return f"the syllabus has no {kind} {number}"
 
 
 def _undated(document: Document, reason: str) -> DatingOutcome:

@@ -195,6 +195,74 @@ async def test_an_ordinal_the_syllabus_does_not_list_stays_undated(
     assert "no lecture 9" in outcomes[0].reason
 
 
+WEEKLY = [
+    ScheduleEntry(kind="week", ordinal=1, occurred_on=date(2020, 2, 3)),
+    ScheduleEntry(kind="week", ordinal=2, occurred_on=date(2020, 2, 10)),
+    ScheduleEntry(kind="week", ordinal=3, occurred_on=date(2020, 2, 17)),
+]
+
+
+@pytest.mark.asyncio
+async def test_a_weekly_schedule_does_not_date_a_lecture(
+    session: AsyncSession, course: Course
+) -> None:
+    """Waterloo's schedule is headed `Week of`. Its ordinals are not lectures.
+
+    `(3) Sep 20` means the week beginning the 20th, and a course with two lectures
+    a week has lectures 5 and 6 inside week 3. Converting between them needs a
+    lectures-per-week figure that appears in neither the syllabus nor the
+    filenames. Deriving it from the upload assumes the student uploaded every
+    lecture, which is the assumption slice 2 measured going wrong by weeks.
+
+    The decisive objection is the column, not the arithmetic: a date reached that
+    way would be stored as `parsed_syllabus` — *the syllabus stated this* — when
+    it stated nothing of the kind. That is a false claim carrying the strongest
+    provenance the enum has.
+    """
+    await add(session, course, "lecture-02.pdf")
+
+    outcomes = await run(session, course, schedule=WEEKLY)
+
+    assert outcomes[0].occurred_on is None
+    assert outcomes[0].candidates == ()
+
+
+@pytest.mark.asyncio
+async def test_the_granularity_mismatch_is_named_not_reported_as_a_missing_row(
+    session: AsyncSession, course: Course
+) -> None:
+    """`the syllabus has no lecture 2` would send someone hunting for a row.
+
+    There is no missing row. The two sides count different things, and only the
+    reason string can say so — the outcome is undated either way, which is exactly
+    why the wrong wording here would go unnoticed.
+    """
+    await add(session, course, "lecture-02.pdf")
+
+    outcomes = await run(session, course, schedule=WEEKLY)
+
+    assert "numbers weeks" in outcomes[0].reason
+    assert "several lectures" in outcomes[0].reason
+
+
+@pytest.mark.asyncio
+async def test_a_weekly_schedule_still_dates_weekly_material(
+    session: AsyncSession, course: Course
+) -> None:
+    """The weekly schedule is not useless — it dates what it actually numbers.
+
+    A course distributing `week-03-notes.pdf` joins exactly, and the date is one
+    the syllabus stated. Nothing about the mismatch above is a reason to discard
+    a schedule; it is a reason not to reinterpret it.
+    """
+    await add(session, course, "week-03-notes.pdf")
+
+    outcomes = await run(session, course, schedule=WEEKLY)
+
+    assert outcomes[0].occurred_on == date(2020, 2, 17)
+    assert outcomes[0].source == OccurredAtSource.PARSED_SYLLABUS
+
+
 @pytest.mark.asyncio
 async def test_a_schedule_date_outside_the_term_is_refused_not_raised(
     session: AsyncSession, course: Course
