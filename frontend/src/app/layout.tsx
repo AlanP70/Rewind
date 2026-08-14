@@ -37,6 +37,9 @@ export default function RootLayout({
           <Link href="/upload" className="opacity-70 hover:opacity-100">
             Upload
           </Link>
+          <Link href="/documents" className="opacity-70 hover:opacity-100">
+            Documents
+          </Link>
         </nav>
         <Providers>{children}</Providers>
       </body>

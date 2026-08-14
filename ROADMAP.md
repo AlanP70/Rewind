@@ -1629,9 +1629,14 @@ Backend suite is **150**, frontend **17**, both passing; `next build` and
 
 **Deferred, with reasons:**
 
-- **Nothing links to `/documents`.** Neither does `/upload` — the app has had no
-  navigation since Phase 0 and adding it is not this slice's job. Trigger: the
-  third route, or Phase 7's landing page, whichever comes first.
+- ~~**Nothing links to `/documents`.**~~ **Closed the same day, and the entry was
+  wrong when filed.** It claimed `/upload` was unlinked too and that the app had
+  had no navigation since Phase 0; `layout.tsx` has had a nav with `/` and
+  `/upload` in it the whole time, and only the new route was missing from it.
+  Worth leaving visible rather than deleting: the claim was written from memory
+  of the pages instead of from the layout, and it made a one-line omission sound
+  like a structural gap — the same failure as treating a prose claim about
+  behaviour as fact, in the direction of overstating the work left.
 - **No sorting or filtering by date.** The list is in upload order, and undated
   rows sit among the dated ones rather than being collected at the bottom,
   because a list that buries its gaps is how "surfaced, never silently defaulted"
