@@ -172,6 +172,33 @@ a person, or filenames carrying weekdays. Not an inference of that figure from t
 files present. A schedule that never says what it numbers is **refused, not
 assumed to be lectures**. Suite is 144, all passing.
 
+Slice 5 landed the dating UI (`GET /documents?course_id=`, `features/documents/`,
+`/documents`) and the frontend's first test runner. Building it surfaced that
+**slice 3's two-candidate conflict is unreachable from a read request**: nothing
+persists a parsed schedule, so a GET can recompute the filename half and never
+the syllabus half, and slice 3 stores neither date in a conflict so the database
+holds no trace either. Filed as a Deferred ROADMAP entry (`courses.schedule` as
+JSONB versus a `course_schedule_entries` table, which would break the ten-table
+plan), triggered by the first time a conflict must survive the CLI invocation
+that produced it. **A feature correct at every step can still be unreachable, and
+prose about behaviour will not reveal it** — walk the data flow.
+
+Two rules the code depends on and cannot enforce. **The read half is a separate
+function, `plan_dates_from_filenames`, not a `dry_run` flag** — this module
+funnels writes, and a flag that switches writing off is a second invisible mode
+of the funnel; the guarantee that holds is that the function the route calls
+contains no write at all. And **the date column shows stored dates only**:
+candidates render below the row as verbs on buttons, two of them side by side and
+identically weighted with no default and no confidence, and accepting one writes
+`manual`, because the enum answers who is responsible and after a click that is a
+person. Undated rows carry the backend's reason verbatim plus a date input.
+
+Phase 2's carried-over `describe()` assertions landed in the same slice, as that
+item required. Vitest only — no jsdom, no testing-library, no
+`@vitejs/plugin-react` — because everything worth pinning in both features is a
+pure function. No course-level banner was built: the syllabus refusal it would
+show is not persisted, so it would be a component with no data source.
+
 **Decision, load-bearing for the rest of the phase: `inferred_filename` does not
 write `occurred_at`.** `date_course_from_filenames` stores only `filename_date`
 — a date the filename states — and returns an interpolated date as a

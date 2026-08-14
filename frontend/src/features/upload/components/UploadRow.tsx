@@ -18,7 +18,7 @@ import type { DocumentProgress } from "../api/documents";
  * a bar appears only during embedding, where `chunks_embedded / chunks_total` is
  * a real ratio of two real counts.
  */
-type Stage = {
+export type Stage = {
   label: string;
   icon: React.ReactNode;
   /** Only set when a genuine ratio exists. Never derived from elapsed time. */
@@ -26,7 +26,10 @@ type Stage = {
   error?: string;
 };
 
-function describe(progress: DocumentProgress): Stage {
+// Exported for `describe.test.ts`, which is the whole of Phase 2's carried-over
+// assertions. The rule it protects -- no bar without two real counts -- is a
+// decision, and a decision nothing checks is a comment.
+export function describe(progress: DocumentProgress): Stage {
   if (progress.status === "failed") {
     return {
       label: "Failed",

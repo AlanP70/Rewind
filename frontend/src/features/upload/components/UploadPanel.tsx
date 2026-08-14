@@ -3,8 +3,7 @@
 import { useState } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { courseLabel } from "../api/courses";
-import { useCourses } from "../hooks/useCourses";
+import { courseLabel, useCourses } from "@/lib/courses";
 import { useUploadDocument } from "../hooks/useUploadDocument";
 import { DropZone } from "./DropZone";
 import { UploadList, type AcceptedUpload, type RejectedUpload } from "./UploadList";

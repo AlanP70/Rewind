@@ -19,6 +19,7 @@ from app.repositories import documents as documents_repo
 from app.services.dating import (
     DateCandidate,
     date_course_from_filenames,
+    plan_dates_from_filenames,
     redate_document,
 )
 from app.services.errors import NotFoundError
@@ -277,3 +278,90 @@ async def test_an_unknown_course_is_not_found(session: AsyncSession) -> None:
         await date_course_from_filenames(
             session, user_id=SEED_USER_ID, course_id=uuid.uuid4()
         )
+
+
+@pytest.mark.asyncio
+async def test_the_planner_writes_nothing(session: AsyncSession, course: Course) -> None:
+    """The half `GET /documents` calls decides everything and stores nothing.
+
+    `lec-2020-02-11.pdf` is the case that makes this worth a test: it is the one
+    filename shape `date_course_from_filenames` *does* write, so if planning and
+    writing were ever the same code path this is where a read request would date
+    a document. The plan says what it would store; the row stays null.
+    """
+    await add(session, course, "lec-2020-02-11.pdf")
+
+    planned = await plan_dates_from_filenames(
+        session, user_id=SEED_USER_ID, course_id=course.id
+    )
+    plan = planned.documents[0]
+    document_id = plan.document.id
+
+    assert plan.occurred_on == date(2020, 2, 11)
+    assert plan.source == OccurredAtSource.FILENAME_DATE
+
+    session.expire_all()
+    stored = await documents_repo.get(session, document_id, SEED_USER_ID)
+    assert stored is not None
+    assert stored.occurred_at is None
+    assert stored.occurred_at_source is None
+
+
+@pytest.mark.asyncio
+async def test_a_planned_write_is_offered_as_a_candidate(
+    session: AsyncSession, course: Course
+) -> None:
+    """`offers` is what a reader sees, and it does not distinguish the two.
+
+    A date the dater would store and a date it would only suggest are both, to
+    anything that has not run the dater, a date that is not in the database. The
+    UI has one thing to render for both -- a button -- and the difference lives
+    in `source`, not in whether the field exists.
+    """
+    await add(session, course, "lec-2020-02-11.pdf")
+    await add(session, course, "lec1.pdf")
+    await add(session, course, "lec11.pdf")
+
+    planned = await plan_dates_from_filenames(
+        session, user_id=SEED_USER_ID, course_id=course.id
+    )
+    offers = {plan.filename: plan.offers for plan in planned.documents}
+
+    assert offers["lec-2020-02-11.pdf"] == (
+        DateCandidate(
+            source=OccurredAtSource.FILENAME_DATE, occurred_on=date(2020, 2, 11)
+        ),
+    )
+    assert offers["lec1.pdf"] == (
+        DateCandidate(source=OccurredAtSource.INFERRED_FILENAME, occurred_on=STARTS_ON),
+    )
+    assert planned.starts_on == STARTS_ON
+    assert planned.ends_on == ENDS_ON
+
+
+@pytest.mark.asyncio
+async def test_a_dated_document_offers_nothing(
+    session: AsyncSession, course: Course
+) -> None:
+    """Already dated is a plan with no offers and the reason it was skipped.
+
+    Every document comes back, dated or not, so the list route does not have to
+    fetch the rest separately -- and the reason rides along without ever becoming
+    something a client shows next to a date that exists.
+    """
+    document_id = await add(session, course, "lec-2020-02-11.pdf")
+    await redate_document(
+        session,
+        user_id=SEED_USER_ID,
+        document_id=document_id,
+        occurred_on=date(2020, 3, 2),
+        source=OccurredAtSource.MANUAL,
+    )
+
+    planned = await plan_dates_from_filenames(
+        session, user_id=SEED_USER_ID, course_id=course.id
+    )
+    plan = planned.documents[0]
+
+    assert plan.offers == ()
+    assert plan.reason == "dated by hand"

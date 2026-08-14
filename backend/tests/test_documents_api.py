@@ -420,3 +420,74 @@ async def test_a_run_within_the_threshold_is_not_stale(
     body = (await client.get(f"/documents/{document_id}/status")).json()
 
     assert body["stale"] is False
+
+
+async def _document(session: AsyncSession, course_id: uuid.UUID, filename: str) -> None:
+    """A row whose storage key ends in `filename`, which is what gets parsed."""
+    await documents_repo.create(
+        session,
+        user_id=SEED_USER_ID,
+        course_id=course_id,
+        kind="lecture",
+        title="whatever the uploader typed",
+        storage_key=storage_key(SEED_USER_ID, filename),
+    )
+    await session.commit()
+
+
+async def test_the_list_offers_candidates_for_undated_documents(
+    client: AsyncClient, session: AsyncSession, course_id: uuid.UUID
+) -> None:
+    """Undated is a state with content in it, not an empty cell.
+
+    Every document comes back with either a stored date or a candidate and a
+    sentence. The two ordinals produce an interpolation between the term bounds,
+    which is offered rather than stored -- so all three rows are undated and all
+    three have something for a person to act on.
+    """
+    for name in ("lec-2024-09-10.pdf", "lec1.pdf", "lec9.pdf"):
+        await _document(session, course_id, name)
+
+    response = await client.get("/documents", params={"course_id": str(course_id)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["undated"] == 3
+    assert body["starts_on"] == "2024-09-01"
+    assert body["ends_on"] == "2024-12-15"
+
+    rows = {row["filename"]: row for row in body["documents"]}
+    assert rows["lec-2024-09-10.pdf"]["occurred_at"] is None
+    assert rows["lec-2024-09-10.pdf"]["candidates"] == [
+        {"source": "filename_date", "occurred_on": "2024-09-10"}
+    ]
+    assert rows["lec1.pdf"]["candidates"] == [
+        {"source": "inferred_filename", "occurred_on": "2024-09-01"}
+    ]
+    assert "interpolated" in rows["lec1.pdf"]["reason"]
+
+
+async def test_listing_documents_dates_none_of_them(
+    client: AsyncClient, session: AsyncSession, course_id: uuid.UUID
+) -> None:
+    """The guard the route exists to keep: a GET is not a dating run.
+
+    `lec-2024-09-10.pdf` is the shape `date_course_from_filenames` would write, so
+    if this route ever reached the dater instead of the planner, opening the page
+    would silently date the course and the second request would report a stored
+    date nobody asked for.
+    """
+    await _document(session, course_id, "lec-2024-09-10.pdf")
+
+    await client.get("/documents", params={"course_id": str(course_id)})
+    body = (await client.get("/documents", params={"course_id": str(course_id)})).json()
+
+    assert body["undated"] == 1
+    assert body["documents"][0]["occurred_at"] is None
+    assert body["documents"][0]["occurred_at_source"] is None
+
+
+async def test_listing_an_unknown_course_is_404(client: AsyncClient) -> None:
+    response = await client.get("/documents", params={"course_id": str(uuid.uuid4())})
+
+    assert response.status_code == 404

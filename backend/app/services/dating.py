@@ -91,16 +91,94 @@ class DatingOutcome:
     reason: str = ""
 
 
-async def date_course_from_filenames(
+@dataclass(frozen=True)
+class DatePlan:
+    """What a filename dating run *would* do to one document, before it does it.
+
+    The same three shapes as `DatingOutcome` -- a date to write, candidates to
+    offer, or a reason for neither -- over the document rather than its id,
+    because both callers need more of the row than an id.
+
+    It is a separate type from `DatingOutcome` on purpose. `occurred_on` on an
+    outcome means a date **was** written; here it means one **would** be. Reusing
+    one type and letting the caller decide which reading applies is how a read
+    request ends up displaying a date nothing stored.
+
+    `reason` says what was found, and unlike `DatingOutcome`'s it is set on the
+    write branch too -- from a reader's side that document is still undated and
+    still needs a sentence explaining the empty cell.
+    """
+
+    document: Document
+    occurred_on: date | None = None
+    source: OccurredAtSource | None = None
+    candidates: tuple[DateCandidate, ...] = ()
+    reason: str = ""
+
+    @property
+    def filename(self) -> str:
+        """The name the file was uploaded under -- see `_filename`."""
+        return _filename(self.document)
+
+    @property
+    def offers(self) -> tuple[DateCandidate, ...]:
+        """Every date on this plan that is not in the database.
+
+        **A planned write is an offer too.** `date_course_from_filenames` would
+        store `occurred_on` itself, but a reader has not, so to anything that only
+        reads, the two are the same thing -- a date worked out and not stored --
+        and the only difference is who has to click. Collapsing them here is what
+        lets the list route be a mapping with no decisions in it.
+
+        The order is fixed by construction and never sorted. `source` is
+        provenance, not a score, so ordering by it would put a recommendation in
+        front of a person who is being asked to decide.
+        """
+        if self.occurred_on is None or self.source is None:
+            return self.candidates
+        return (
+            DateCandidate(source=self.source, occurred_on=self.occurred_on),
+            *self.candidates,
+        )
+
+
+@dataclass(frozen=True)
+class CourseDatePlan:
+    """Every document in one course, and the term its dates are judged against.
+
+    The bounds ride along because the caller that wants the plans -- a UI listing
+    undated documents so a person can fill them in -- needs the range that date
+    input is checked against, and it comes from the same row the planner already
+    had to fetch.
+    """
+
+    starts_on: date
+    ends_on: date
+    documents: tuple[DatePlan, ...]
+
+
+async def plan_dates_from_filenames(
     session: AsyncSession,
     *,
     user_id: uuid.UUID,
     course_id: uuid.UUID,
     overwrite: bool = False,
-) -> list[DatingOutcome]:
-    """Date every document in a course from its filename. Reports what it could not.
+) -> CourseDatePlan:
+    """Work out what every document's filename says. Writes nothing.
 
-    **Only a date the filename states is written. An interpolated one is offered.**
+    **A separate function rather than a `dry_run=True` on the writer.** This whole
+    module exists to funnel writes through one place; a flag that switches writing
+    off is a second, invisible mode of the funnel, and getting it wrong means a
+    GET quietly dates a course. The seam is enforced by there being no `await
+    redate_document` below this line rather than by a parameter nobody re-reads.
+
+    Every document in the course comes back, in upload order, including the ones
+    nothing can be done with -- an already-dated document gets an empty plan and
+    the reason it was skipped. Returning only the actionable ones would make the
+    caller re-fetch the rest to render a list.
+
+    **Only a date the filename states becomes a write. An interpolated one is
+    offered.**
     A `filename_date` is testimony -- someone wrote `2020-02-11` in the name, and
     it is wrong only if they were wrong. An `inferred_filename` date is arithmetic
     on top of testimony about something else, its accuracy has never been
@@ -109,7 +187,7 @@ async def date_course_from_filenames(
     ordinal range places the highest lecture uploaded on the last day of term, so
     a student who uploads 11 of 20 lectures gets lecture 11 dated in May.
 
-    So an ordinal produces a `candidate` on the outcome and no write. Extraction
+    So an ordinal produces a `candidate` on the plan and no write. Extraction
     is reliable and ordering is reliable; the date is not, and a
     confidently-weeks-wrong date rendered in a timeline is worse than an honest
     blank. The candidate is still computed, so the UI can offer it for one-click
@@ -141,11 +219,6 @@ async def date_course_from_filenames(
     replacing their answer with a guess is the single worst thing this code could
     do. Every other source is fair game -- re-inferring an `inferred_filename`
     date is just running a better version of the same guess.
-
-    Dates are written one at a time through `redate_document`, which commits per
-    document. A run that dies halfway leaves the documents it reached correctly
-    dated rather than rolling back work that was right; nothing here depends on
-    the batch being atomic.
     """
     course = await courses_repo.get(session, course_id, user_id)
     if course is None:
@@ -155,24 +228,24 @@ async def date_course_from_filenames(
         session, course_id=course_id, user_id=user_id
     )
 
-    candidates: list[Document] = []
-    outcomes: list[DatingOutcome] = []
+    eligible: list[Document] = []
+    plans: dict[uuid.UUID, DatePlan] = {}
     for document in documents:
         # `==`, not `is`. The column is `Mapped[str | None]` over `String(32)`,
         # so a loaded row carries a plain `str` and an identity check against the
         # StrEnum is silently always false -- which here would have meant
         # overwriting hand-set dates, the one thing this must never do.
         if document.occurred_at_source == OccurredAtSource.MANUAL:
-            outcomes.append(_undated(document, "dated by hand"))
+            plans[document.id] = DatePlan(document, reason="dated by hand")
         elif document.occurred_at is not None and not overwrite:
-            outcomes.append(_undated(document, "already dated"))
+            plans[document.id] = DatePlan(document, reason="already dated")
         else:
-            candidates.append(document)
+            eligible.append(document)
 
     # Pass 1: dates the filenames state outright.
     ordinals: dict[uuid.UUID, tuple[str, int]] = {}
     explicit: dict[uuid.UUID, date] = {}
-    for document in candidates:
+    for document in eligible:
         name = _filename(document)
         if found := filename_dates.read_explicit_date(
             name, starts_on=course.starts_on, ends_on=course.ends_on
@@ -188,30 +261,17 @@ async def date_course_from_filenames(
     for kind, number in ordinals.values():
         seen.setdefault(kind, []).append(number)
 
-    for document in candidates:
+    for document in eligible:
         if found := explicit.get(document.id):
-            try:
-                await redate_document(
-                    session,
-                    user_id=user_id,
-                    document_id=document.id,
-                    occurred_on=found,
-                    source=OccurredAtSource.FILENAME_DATE,
-                )
-            except ServiceError as error:
-                # Out-of-term, refused by the funnel. The filename stated a date
-                # in the wrong term, which is a real thing that happens and must
-                # not take the rest of the batch down with it.
-                outcomes.append(_undated(document, str(error)))
-                continue
-
-            outcomes.append(
-                DatingOutcome(
-                    document_id=document.id,
-                    filename=_filename(document),
-                    occurred_on=found,
-                    source=OccurredAtSource.FILENAME_DATE,
-                )
+            plans[document.id] = DatePlan(
+                document,
+                occurred_on=found,
+                source=OccurredAtSource.FILENAME_DATE,
+                # Set even though this branch is a write, because a reader that
+                # never runs the write needs a sentence for the empty cell. The
+                # writer builds its own outcome and never reads this, so
+                # `DatingOutcome`'s "reason exactly when undated" rule is intact.
+                reason=f"the filename states {found}; nothing has stored it yet",
             )
             continue
 
@@ -226,36 +286,107 @@ async def date_course_from_filenames(
                 ends_on=course.ends_on,
             )
             if suggestion is None:
-                outcomes.append(
-                    _undated(
-                        document,
+                plans[document.id] = DatePlan(
+                    document,
+                    reason=(
                         f"only one {kind} in this course, so {kind} {number} "
-                        f"has no range to sit in",
-                    )
+                        f"has no range to sit in"
+                    ),
                 )
             else:
                 # Computed, deliberately not written. See this function's
                 # docstring: interpolated dates have no measured accuracy, so
                 # they are offered rather than stored.
-                outcomes.append(
-                    DatingOutcome(
-                        document_id=document.id,
-                        filename=_filename(document),
-                        candidates=(
-                            DateCandidate(
-                                source=OccurredAtSource.INFERRED_FILENAME,
-                                occurred_on=suggestion,
-                            ),
+                plans[document.id] = DatePlan(
+                    document,
+                    candidates=(
+                        DateCandidate(
+                            source=OccurredAtSource.INFERRED_FILENAME,
+                            occurred_on=suggestion,
                         ),
-                        reason=(
-                            f"{kind} {number} of {min(numbers)}..{max(numbers)}; "
-                            f"interpolated, so offered rather than stored"
-                        ),
-                    )
+                    ),
+                    reason=(
+                        f"{kind} {number} of {min(numbers)}..{max(numbers)}; "
+                        f"interpolated, so offered rather than stored"
+                    ),
                 )
             continue
 
-        outcomes.append(_undated(document, "no date or lecture number in the filename"))
+        plans[document.id] = DatePlan(
+            document, reason="no date or lecture number in the filename"
+        )
+
+    return CourseDatePlan(
+        starts_on=course.starts_on,
+        ends_on=course.ends_on,
+        # Rebuilt in upload order rather than appended to, because the passes
+        # above visit the documents in a different order than they arrived in.
+        documents=tuple(plans[document.id] for document in documents),
+    )
+
+
+async def date_course_from_filenames(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    course_id: uuid.UUID,
+    overwrite: bool = False,
+) -> list[DatingOutcome]:
+    """Date every document in a course from its filename. Reports what it could not.
+
+    Plan, then write. Everything that decides *what* the date should be lives in
+    `plan_dates_from_filenames`; this is only the part that commits it, which is
+    what keeps the deciding half callable from a read request.
+
+    Dates are written one at a time through `redate_document`, which commits per
+    document. A run that dies halfway leaves the documents it reached correctly
+    dated rather than rolling back work that was right; nothing here depends on
+    the batch being atomic.
+    """
+    planned = await plan_dates_from_filenames(
+        session, user_id=user_id, course_id=course_id, overwrite=overwrite
+    )
+
+    outcomes: list[DatingOutcome] = []
+    for plan in planned.documents:
+        document = plan.document
+        if plan.occurred_on is None or plan.source is None:
+            outcomes.append(
+                DatingOutcome(
+                    document_id=document.id,
+                    filename=_filename(document),
+                    candidates=plan.candidates,
+                    reason=plan.reason,
+                )
+            )
+            continue
+
+        try:
+            await redate_document(
+                session,
+                user_id=user_id,
+                document_id=document.id,
+                occurred_on=plan.occurred_on,
+                source=plan.source,
+            )
+        except ServiceError as error:
+            # Out-of-term, refused by the funnel. The filename stated a date in
+            # the wrong term, which is a real thing that happens and must not
+            # take the rest of the batch down with it. Caught here rather than in
+            # the planner because it is the funnel's rule, and a planner that
+            # anticipated it would be a second copy of a check that already
+            # exists in the one place allowed to enforce it.
+            outcomes.append(_undated(document, str(error)))
+            continue
+
+        outcomes.append(
+            DatingOutcome(
+                document_id=document.id,
+                filename=_filename(document),
+                occurred_on=plan.occurred_on,
+                source=plan.source,
+            )
+        )
 
     return outcomes
 

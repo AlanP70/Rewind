@@ -16,12 +16,15 @@ from app.api.deps import get_queue, get_session
 from app.models import OccurredAtSource
 from app.models.user import SEED_USER_ID
 from app.schemas.documents import (
+    CourseDating,
+    DateCandidate,
     DocumentAccepted,
     DocumentDate,
     DocumentDateUpdate,
+    DocumentDating,
     DocumentProgress,
 )
-from app.services.dating import redate_document
+from app.services.dating import DatePlan, plan_dates_from_filenames, redate_document
 from app.services.errors import ConflictError, NotFoundError, ServiceError
 from app.services.processing import document_progress, submit_document
 
@@ -101,6 +104,40 @@ async def upload_document(
     )
 
 
+@router.get("")
+async def list_course_documents(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    course_id: uuid.UUID,
+) -> CourseDating:
+    """Every document in a course, with its date or the reason it has none.
+
+    Calls the **planner**, which writes nothing, rather than the dater. A GET that
+    reached `redate_document` would date a whole course as a side effect of
+    someone opening a page, and the protection is that
+    `plan_dates_from_filenames` contains no write at all -- not a flag on the
+    function that does.
+
+    Candidates are therefore recomputed on every request. That is deliberate:
+    interpolating an ordinal depends on which files have been uploaded, so a
+    cached suggestion is wrong as soon as one more lecture arrives.
+    """
+    try:
+        planned = await plan_dates_from_filenames(
+            session, user_id=SEED_USER_ID, course_id=course_id
+        )
+    except ServiceError as error:
+        raise _as_http(error) from error
+
+    return CourseDating(
+        starts_on=planned.starts_on,
+        ends_on=planned.ends_on,
+        undated=sum(
+            1 for plan in planned.documents if plan.document.occurred_at is None
+        ),
+        documents=[_dating(plan) for plan in planned.documents],
+    )
+
+
 @router.get("/{document_id}/status")
 async def document_status(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -152,6 +189,23 @@ async def correct_document_date(
         starts_on=result.starts_on,
         ends_on=result.ends_on,
         outside_term=result.outside_term,
+    )
+
+
+def _dating(plan: DatePlan) -> DocumentDating:
+    """One plan as one row. A mapping with no decisions -- see `DatePlan.offers`."""
+    return DocumentDating(
+        document_id=plan.document.id,
+        filename=plan.filename,
+        title=plan.document.title,
+        status=plan.document.status,
+        occurred_at=plan.document.occurred_at,
+        occurred_at_source=plan.document.occurred_at_source,
+        candidates=[
+            DateCandidate(source=offer.source, occurred_on=offer.occurred_on)
+            for offer in plan.offers
+        ],
+        reason=plan.reason,
     )
 
 

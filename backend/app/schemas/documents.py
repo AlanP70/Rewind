@@ -93,3 +93,57 @@ class DocumentDate(BaseModel):
     # every other source is refused when it lands outside. A UI that ignores this
     # turns a user's correction into a silently odd row.
     outside_term: bool
+
+
+class DateCandidate(BaseModel):
+    """A date that was worked out and is **not** in the database.
+
+    Sent as data rather than described in `reason` so the UI can offer it as a
+    button. Accepting one is a `PATCH .../date`, which records `manual` -- the
+    enum answers who is responsible for the date, and after a click that is a
+    person, not the heuristic that suggested it.
+    """
+
+    source: OccurredAtSource
+    occurred_on: date
+
+
+class DocumentDating(BaseModel):
+    """One row of the dating list: what is stored, what is offered, and why not.
+
+    `occurred_at` is the only field that means *stored*. `candidates` are dates
+    nothing has written and that will be recomputed on the next request -- an
+    interpolation depends on which files have been uploaded, so caching one would
+    serve a stale answer after the next upload.
+
+    `reason` is filled in whenever nothing was written, including for documents
+    that were skipped because they already have a date. A client shows it only
+    when `occurred_at` is null; it is not an error field.
+    """
+
+    document_id: uuid.UUID
+    filename: str
+    title: str
+    status: DocumentStatus
+
+    occurred_at: datetime | None
+    occurred_at_source: OccurredAtSource | None
+
+    candidates: list[DateCandidate]
+    reason: str
+
+
+class CourseDating(BaseModel):
+    """Every document in a course with its date, its offers, and the term.
+
+    The term bounds are here rather than fetched separately because the date
+    input on an undated row is checked against them, and `undated` is here
+    because "3 of 12 documents have no date" is the headline this phase's
+    done-when asks for -- a count the client derives is a count that disagrees
+    with the server the moment the list is filtered.
+    """
+
+    starts_on: date
+    ends_on: date
+    undated: int
+    documents: list[DocumentDating]

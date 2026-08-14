@@ -722,6 +722,11 @@ it, rather than paying the fixture cost for a single test.
   the timeline UI lands and there is real client-side logic to test. Write these
   assertions in the same slice that installs the runner.
 
+  **Closed in Phase 3, slice 5**, one phase earlier than guessed — the dating UI
+  justified the runner. `describe()` is exported and both assertions are written,
+  including one that moves `attempts`, `run_status` and `stale` and checks the
+  ratio does not follow. Mutation-checked. See Phase 3's "Settled in slice 5".
+
 **Done when**
 - Uploading through the UI produces a document that reaches `ready` without any
   manual step. — **Met.** Driven in a real headless Chrome over CDP, with
@@ -1516,6 +1521,125 @@ including slice 1's AST guard and slice 2's 58/12/0 corpus, both unchanged.
   A syllabus with two genuine session series would need to emit both, and none
   has been seen.
 
+### Settled in slice 5 (the dating UI, and the frontend's first test runner)
+
+**The conflict branch was traced through the data flow before any UI was built,
+and it turned out to be unreachable from a read request.** Slice 3 returns two
+`candidates` when the syllabus and a filename disagree; slice 5's job was to
+render that. It cannot: candidates are computed and never stored, a GET can
+recompute the filename half from `storage_key` but the syllabus half only exists
+inside `date_course_from_syllabus`'s arguments, and slice 3's rule stores
+*neither* date in a conflict, so the disagreement leaves no trace in the database
+either. Filed as a Deferred entry with both schema options rather than absorbed
+into this slice to unblock one branch — it is a schema decision, and one of the
+two options breaks the ten-table plan.
+
+Worth naming as a pattern: the branch existed, was tested, and was described in
+three documents, and nothing about it was wrong. What was missing was one link in
+a chain nobody had walked end to end. **A feature that is correct at every step
+can still be unreachable, and prose about behaviour will not reveal that** —
+which is the same lesson as the `queued` run row Phase 2 claimed and did not
+write, arriving from the other direction.
+
+**The write half and the read half are separate functions, not one function with
+a flag.** `plan_dates_from_filenames` decides every date and writes nothing;
+`date_course_from_filenames` is now that call plus a write loop. A `dry_run=True`
+on the dater would have been fewer lines and is the version to avoid: this module
+exists to funnel writes through one place, and a parameter that switches writing
+off is a second, invisible mode of that funnel, guarded by a caller passing the
+right argument. The guarantee wanted here is "opening a page cannot date a
+course", and the form of it that holds is that the function the route calls
+contains no write at all. Mutation-checked — a `redate_document` added to the
+planner fails both the service test and the route test.
+
+The corollary is `DatePlan` being a distinct type from `DatingOutcome`.
+`occurred_on` on an outcome means a date **was** written; on a plan it means one
+**would** be. One type serving both readings is how a read request ends up
+rendering a date nothing stored.
+
+**Register rules for the UI, which is what this slice is actually about:**
+
+- **The date column shows stored dates only.** Nothing else may render there —
+  not greyed out, not in italics, not with a question mark. Every one of those
+  puts a guess where a fact goes and leaves the reader to notice the styling.
+- **A button is not a value.** Candidates render below the row as verbs (`Use Feb
+  11, 2020, from the filename`), so they read as something to do rather than
+  something that is true.
+- **Two candidates render side by side and identically weighted.** Not stacked:
+  vertical order reads as ranking and a first option reads as a default. No
+  `variant="default"`, no "recommended", no confidence figure. Surfacing a
+  disagreement and then visually answering it is worse than not surfacing it.
+- **Accepting a candidate writes `manual`.** The enum answers who is responsible
+  for the date, and after a click that is a person, not the heuristic that put
+  the option in front of them. The PATCH route takes no `source` field precisely
+  so this cannot be laundered.
+- **Undated is content, not an empty cell.** Every undated row carries the
+  backend's reason **verbatim** and a date input, so the state is always
+  actionable. The count above the list comes from the server, not from counting
+  the rows client-side, so it cannot disagree with them.
+
+**No course-level banner was built.** The plan had one for `unrecognized schedule
+format`, on the reasoning that it is a course fact rather than a document fact.
+That reasoning still holds and there is nothing to put in it: the syllabus
+parser is CLI-only and its refusal is not persisted, by the same deferral above.
+Building the banner now would mean building a component with no data source.
+
+`describeDate` totals over 0, 1 and 2+ candidates even though 2 is unreachable
+today. That is not speculative abstraction — the function has to be total over
+the list regardless, and the version that handles one candidate and lets the rest
+fall through silently drops the second one on the day persistence arrives, which
+is the day it matters most.
+
+**Vitest, no jsdom, no testing-library.** Everything worth pinning in both
+features is a pure function, and both were written that way so the decisions
+could be tested without rendering: `describe` turns two counts into a stage,
+`describeDate` turns a document into one of four states. Installing a DOM
+environment no test needs is a dependency added for later. `@vitejs/plugin-react`
+was also skipped — it conflicts on peers with this Vite and Vitest transforms
+`.tsx` from the tsconfig's `jsx: react-jsx` without it.
+
+**Phase 2's carried-over `describe()` assertions landed here**, as that item
+said they would once a test runner was justified. The rule they protect is that
+**a ratio exists only when two real counts do** — the bar renders from
+`stage.ratio`, so anything that fills it during extraction produces a progress
+bar advancing on invented data, which is what keeping `Progress` out of
+`components/ui/` was meant to prevent, arriving from the other direction. One
+test explicitly moves `attempts`, `run_status` and `stale` and asserts the ratio
+does not follow, because those are what a plausible fake progress number would be
+built from. Mutation-checked, along with `describeDate`'s two-candidate branch.
+
+**`formatDay` parses the day, never the instant.** Dates are stored as midnight
+UTC, so formatting through the browser's zone shows the previous day to everyone
+west of Greenwich — an off-by-one that reproduces only in some timezones and
+reads as bad data rather than a bug.
+
+The courses API moved from `features/upload/api/` to `src/lib/courses.ts`. Two
+features need it and features do not import from each other (invariant 6);
+copying the type would give one backend schema two mirrors that drift.
+
+Verified end to end against the running app on 2026-08-13, not just in tests: all
+three undated shapes render with their reasons (`no date or lecture number in the
+filename`, `lecture 1 of 1..11; interpolated, so offered rather than stored`, `the
+filename states 2020-02-11; nothing has stored it yet`), and clicking the
+filename-date offer stored `2020-02-11` as `manual` and moved the count from 6 of
+6 to 5 of 6.
+
+Backend suite is **150**, frontend **17**, both passing; `next build` and
+`eslint` clean.
+
+**Deferred, with reasons:**
+
+- **Nothing links to `/documents`.** Neither does `/upload` — the app has had no
+  navigation since Phase 0 and adding it is not this slice's job. Trigger: the
+  third route, or Phase 7's landing page, whichever comes first.
+- **No sorting or filtering by date.** The list is in upload order, and undated
+  rows sit among the dated ones rather than being collected at the bottom,
+  because a list that buries its gaps is how "surfaced, never silently defaulted"
+  turns back into a silent default. Sorting belongs with the timeline in Phase 4.
+- **No dating runs from the UI** — no "date this course" button and no syllabus
+  upload. Both write across a whole course at once, and a one-click batch write
+  is not something to hand a UI in the slice that first renders the results.
+
 ---
 
 ## Phase 4 — Retrieval + timeline (the demo)
@@ -1696,3 +1820,39 @@ without them uploading anything first.
   defaulting them, or Phase 3's syllabus parsing running first and proposing
   bounds a person confirms. Sequenced with Phase 7, since that is where the
   second user appears; the Phase 3 route may make it nearly free by then.
+
+- **A parsed schedule is not persisted anywhere, so a syllabus/filename conflict
+  cannot survive the CLI invocation that produced it.** Slice 3's rule is that
+  where the two disagree, *neither* date is stored and both come back as
+  `candidates`. That rule is sound and it has an unnoticed consequence: the
+  disagreement leaves no trace in the database either. `documents.occurred_at`
+  stays null, which is correct, and nothing anywhere records *why*. Found in
+  slice 5 while tracing the data flow behind the candidates UI, before building
+  it — a read request can recompute the filename half from `storage_key`, but the
+  syllabus half only exists inside `date_course_from_syllabus`'s arguments. So the
+  two-candidate branch is real, reachable from the CLI, and unreachable from a
+  GET.
+
+  Two shapes, and this is a schema decision that deserves its own consideration
+  rather than being absorbed into whichever slice it happens to block:
+
+  - **`courses.schedule` as JSONB.** No new table, no migration beyond a column,
+    and the schedule is genuinely one document — it is parsed as a unit, replaced
+    as a unit, and never joined against. The cost is that it is opaque to SQL:
+    "which courses have a session on this date" becomes a scan, and there is no
+    foreign key from an entry to anything.
+  - **A `course_schedule_entries` table.** Rows with `user_id`, `course_id`,
+    `kind`, `ordinal`, `occurred_on`, and the usual `created_at`. Queryable,
+    constrainable — a unique index on `(course_id, kind, ordinal)` would enforce
+    at the database what `date_course_from_syllabus` currently checks in Python
+    before writing. **It also makes eleven tables, and CLAUDE.md says ten.** That
+    is not a veto, but the schema is stated as a closed set with a rationale per
+    column, so adding to it is a decision to make deliberately and write down,
+    not a side effect.
+
+  **Trigger: the first time a conflict needs to survive past the CLI invocation
+  that produced it.** Not a phase — the same correction made to the cascade
+  entry. Today the conflict is printed and the operator acts on it immediately,
+  which is a complete story for one user with a terminal. It stops being one the
+  moment the person resolving the disagreement is not the person who ran the
+  command.
