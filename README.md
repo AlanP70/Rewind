@@ -1,19 +1,29 @@
 # Rewind
 
-A longitudinal learning archive. You upload course material, ask *"where did I
-first learn recursion?"*, and get a chronological timeline of every place that
-concept appeared — first occurrence marked, each hit linking to the exact page
-and passage in the source.
+**A longitudinal learning archive.** You upload a semester of course material,
+ask *"where did I first learn recursion?"*, and get a chronological timeline of
+every place that concept appeared — first occurrence marked, each hit linking to
+the exact page and passage in the source.
+
+**Phases 0 through 3 are closed and tagged.** A PDF uploaded through the page or
+the API is queued, processed by a worker into chunks that record their exact page
+and character offsets, and embedded, with progress reported while it happens;
+documents are then dated from a syllabus schedule, from a date stated in the
+filename, or by hand, with every date recording which of those it came from and a
+date the system had to guess offered for one click rather than stored quietly.
+What is missing is the question in the first paragraph — retrieval and the
+timeline are Phase 4, concept extraction Phase 5, the concept graph Phase 6, and
+auth Phase 7.
+
+It is built one vertical slice at a time, and most of the work is deciding what
+*not* to infer: a wrong date discredits a whole timeline, so an undated document
+is surfaced rather than silently defaulted. Each phase's reasoning — including
+what it deliberately refused to build, and what would reverse that — is in
+`ROADMAP.md`.
 
 - **`ARCHITECTURE.md`** — schema, and the reasoning behind every column.
 - **`ROADMAP.md`** — the phase plan and the constraints settled per phase.
 - **`CLAUDE.md`** — the invariants that are not up for renegotiation.
-
-**Current phase: 3 — dating.** What works today: a PDF uploaded through the page
-or the API is queued, picked up by a worker, split into chunks that record their
-exact page and character offsets, embedded, and reported on while it happens.
-Phases 0 through 2 are closed and tagged. There is still no search and no concept
-extraction — asking *"where did I first learn recursion?"* is Phase 4's job.
 
 ## Prerequisites
 
