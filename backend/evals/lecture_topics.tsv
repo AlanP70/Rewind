@@ -1,0 +1,34 @@
+# What MIT says each 6.006 lecture is about: the link text of the lecture
+# notes index, read 2026-08-16 from
+# ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/pages/lecture-notes/
+#
+# This is the eval's ground truth, and the reason it is worth anything is that
+# MIT wrote it for students rather than for this test. The eval's questions are
+# phrased from these topic names; the expected first occurrence of a topic is
+# the lowest-numbered lecture whose title covers it.
+#
+# Transcribed, not interpreted: the `Lecture N: ` prefix and the trailing
+# ` notes (PDF)` are OCW page furniture and are stripped; a typographic
+# apostrophe is normalised to an ASCII one. Nothing else is edited.
+#
+# ordinal<TAB>topic
+1	Introduction
+2	Data Structures
+3	Sorting
+4	Hashing
+5	Linear Sorting
+6	Binary Trees, Part 1
+7	Binary Trees, Part 2: AVL
+8	Binary Heaps
+9	Breadth-First Search
+10	Depth-First Search
+11	Weighted Shortest Paths
+12	Bellman-Ford
+13	Dijkstra's Algorithm
+14	ASP & Johnson's Algorithm
+15	Dynamic Programming, Part 1: SRBOT, Fib, DAGs, Bowling
+16	Dynamic Programming, Part 2: LCS, LIS, Coins
+17	Dynamic Programming, Part 3
+18	Dynamic Programming, Part 4: Rods, Subsetsums, Pseudopolynomial
+19	Complexity
+20	Course Review

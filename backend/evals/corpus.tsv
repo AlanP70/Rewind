@@ -1,0 +1,38 @@
+# The eval corpus: MIT 6.006 "Introduction to Algorithms", Spring 2020,
+# lecture notes, published by MIT OpenCourseWare under CC BY-NC-SA 4.0.
+#
+# Resolved 2026-08-16 from
+# ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/pages/lecture-notes/
+# by visiting each lecture's resource page; the PDF URLs carry a content hash
+# in the path and cannot be constructed from the filename.
+#
+# `sha256` is what makes this a pin rather than a download. Phase 4's eval
+# numbers are measured against these exact bytes, so an upstream file that
+# changes must fail the fetch loudly instead of quietly moving the score.
+#
+# Lectures only -- the 19 recitations are real material and are deliberately
+# left out. The ground truth in `lecture_topics.tsv` maps topics to lecture
+# numbers, and it says nothing about recitations, so including them would put
+# documents in the corpus that the ground truth cannot rank.
+#
+# filename<TAB>sha256<TAB>bytes<TAB>url
+MIT6_006S20_lec1.pdf	8f2f9c1ce1b63313344c86491870e487da796de71b3312ea05b681a00a5b2de5	237706	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/477c78e0af2df61fa205bcc6cb613ceb_MIT6_006S20_lec1.pdf
+MIT6_006S20_lec2.pdf	8a4659725b3f91ace2590603449a656fdc7b66bd344f1aaaf8004f8be550cb50	221904	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/79a07dc1cb47d76dae2ffedc701e3d2b_MIT6_006S20_lec2.pdf
+MIT6_006S20_lec3.pdf	d1286329a3781b909c8ed481a5527a12c5f6cc3de76f303fe64d858aa1c91e40	229595	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/6d1ae5278d02bbecb5c4428928b24194_MIT6_006S20_lec3.pdf
+MIT6_006S20_lec4.pdf	cbc9a669f00c7554520c667853f4bc95f041348fea7ce76fd8a37246c94dc564	224668	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/ce9e94705b914598ce78a00a70a1f734_MIT6_006S20_lec4.pdf
+MIT6_006S20_lec5.pdf	21b2a6d0fb0a7f83da874e31d2da4a445b93d02fb1dbebab7fa5a7e1415fc010	212265	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/78a3c3444de1ff837f81e52991c24a86_MIT6_006S20_lec5.pdf
+MIT6_006S20_lec6.pdf	b296cb999a106c0de56f2fda725162c8adf12bce06ae849d97842f87c272ad2d	226027	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/376714cc85c6c784d90eec9c575ec027_MIT6_006S20_lec6.pdf
+MIT6_006S20_lec7.pdf	8c0248bb206ffb4556cc346167e18a6fc93d41ad1bdc630ee28d30e51caba9d6	213915	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/a2c80596cf4a2b5fbc854afdd2f23dcb_MIT6_006S20_lec7.pdf
+MIT6_006S20_lec8.pdf	e9a6cdd3ec699a757c4d2c0973cef38dfa3a2aa5da0404dcfdf910197cb92fa3	236091	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/40d4851e550507ca14dc778b9b2266cc_MIT6_006S20_lec8.pdf
+MIT6_006S20_lec9.pdf	db45282ccf191109d6725ebaead32ca8c8477abda594f45c1ac83bb78fee17bd	260901	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/196a95604877d326c6586e60477b59d4_MIT6_006S20_lec9.pdf
+MIT6_006S20_lec10.pdf	1130b0c7e033a7232c591b497d8fbafca25840f61492bda9875fdecb39dc2c78	242252	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/f3e349e0eb3288592289d2c81e0c4f4d_MIT6_006S20_lec10.pdf
+MIT6_006S20_lec11.pdf	f5420032ed55791f358044569c6d191530afd30ea2e18caeaa654778468ec567	225588	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/aa57a9785adf925bc85c1920f53755a0_MIT6_006S20_lec11.pdf
+MIT6_006S20_lec12.pdf	90235febb335919afa2f36666a74ab9d087dea4cab8db3b7232fa66b5c00f35f	262512	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/2430d7903a5529451d80c17f89a41fe8_MIT6_006S20_lec12.pdf
+MIT6_006S20_lec13.pdf	1ab30bcc723f73f3cedb1c49266cc3bb6d8dbfc53dcf46e1d232df6d5c76a9b5	267578	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/d819e7f4568aced8d5b59e03db6c7b67_MIT6_006S20_lec13.pdf
+MIT6_006S20_lec14.pdf	4da736373d0325dcadf2aaf858cbb55942f9a56bf5f9da1fa9e121efd3ab8992	209376	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/7d7d5c35490f41b7b037cafbda7019ad_MIT6_006S20_lec14.pdf
+MIT6_006S20_lec15.pdf	4ffd3740ecac3df26f3b03651a9295a44858f3e3e90da1129d605305b1dc4a1c	252211	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/9eb3e9a51a7b5b60b0f67c2277f8b0ee_MIT6_006S20_lec15.pdf
+MIT6_006S20_lec16.pdf	cda406f918364a6f8d713a18e0ac8773975ebdb23b54a22612ae11f014092fbe	261370	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/28461a74f81101874a13d9679a40584d_MIT6_006S20_lec16.pdf
+MIT6_006S20_lec17.pdf	b6e8920c63f7607ef8dcf4f67c9a8659ef6912bbca46ae30a29c2cb62916c76f	230559	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/665523227a175e9e9ce26ea8d3e5b51c_MIT6_006S20_lec17.pdf
+mit6_006s20_lec18.pdf	583c632e4665a1effb87fd86f78e1d2278946a712cf25337f437fd519f18ba43	326856	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/mit6_006s20_lec18.pdf
+MIT6_006S20_lec19.pdf	be7e7b80c799bd2e521a94829ee3d5b9c9089f1f7067be21cd4170a6029976c6	299012	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/fda666a4db1dc65b3d71be08115502bd_MIT6_006S20_lec19.pdf
+MIT6_006S20_lec20.pdf	8f762641b3b9f470d8f9019d3b279448dfe071480a56aa7bb9dd60cd6ce55ff5	137043	https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/aa4f264093faf990054cc4820553bb46_MIT6_006S20_lec20.pdf

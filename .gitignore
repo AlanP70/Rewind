@@ -12,6 +12,11 @@ __pycache__/
 # Local storage backend — uploaded document bytes, not project source.
 backend/.storage/
 
+# The eval corpus — 4.8 MB of MIT OpenCourseWare PDFs with a canonical home
+# elsewhere. `backend/evals/corpus.tsv` pins the URLs and checksums; run
+# `python evals/fetch_corpus.py` to get the files.
+backend/evals/corpus/
+
 # Node
 node_modules/
 .next/
