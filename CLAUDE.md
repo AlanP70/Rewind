@@ -71,25 +71,68 @@ changing the schema.
 
 ## Current phase
 
-**Phase 3 — dating.** Scope: syllabus parsing, filename inference, a manual
-override endpoint, and a UI showing each document's date and where that date came
-from. Documents that cannot be dated are surfaced, never silently defaulted.
-Nothing else — no search, no concepts.
+**Phase 4 — retrieval + timeline.** The demo. Vector search over `chunks`, an
+HNSW index, `POST /search`, and a chronological timeline with the first
+occurrence badged and every hit deep-linking to its source page. Read ROADMAP's
+Phase 4 section first.
 
-**Read ROADMAP.md's Phase 3 section before writing any of it.** The load-bearing
-constraint is invariant 4 made concrete: **exactly one service function,
-`redate_document`, writes `documents.occurred_at`**, and all three dating paths
-route through it. It exists before there is anything to cascade to, because
-Phase 5 adds a write that must accompany every date change and no constraint can
-force it.
+**The dating constraint shapes the whole UI, and the Phase 3 audit's framing of
+it needed correcting: coverage is weak, accuracy is not.** Unattended dating
+writes zero dates *by design* — `inferred_filename` has no writer since slice 5,
+so a date that is stored was either stated by a syllabus, stated by a filename,
+or set by a person, and all three are worth trusting. The consequences:
+**the timeline is an ordering, not a scale** — no proportional time axis, no
+month gaps drawn to size, because interpolated spacing is exactly the precision
+we do not have; and **the first-occurrence badge is suppressed whenever any
+undated document also matches**, since "first" is a claim about the whole corpus
+and an undated match could precede it. Undated matches are shown, grouped, never
+silently dropped.
 
-Two items are explicitly carried into this phase by ROADMAP: `documents` has no
-`ON DELETE CASCADE` — **re-checked in slice 1 and corrected: Phase 3 is not where
-that stops being free**, nothing in this phase deletes a document, and the
-trigger is now the condition "first code path that deletes a `documents` row";
-and Phase 2's frontend has no test runner, so if Phase 3's dating UI justifies
-one, the `describe()` assertions in Phase 2's outstanding-gaps item land in the
-same slice.
+**Retrieval quality is the phase's real question and a passing test does not
+answer it.** Slice 4's eval reports a four-way tally — `first-correct` /
+`first-wrong` / `not-found` / `unrankable` — plus recall@k and a keyword
+baseline, against 20 real MIT 6.006 lectures whose ground truth is MIT's own
+topic titles. **The numbers and the baseline get reported before any verdict on
+whether retrieval is good**, same as 58/12/0. If vector search does not beat the
+keyword baseline on this corpus, that gets said plainly rather than reframed —
+it is the more useful result.
+
+Settled by decision, not to be re-opened: hits group **per document**, not per
+chunk; a tie for earliest badges **both, labelled earliest, with the count**;
+the PDF opens in the **native viewer at the right page** and **the passage
+highlight is ours, not in-PDF** (ROADMAP's wording could be read as promising
+otherwise and should not be); the file is served by our own route mirroring
+`core/storage.py`; and course scoping is **optional, cross-course by default** —
+longitudinal across a degree is the product. The corpus is dated by hand as
+`manual`, because zero dated documents would leave the headline claim unmeasured.
+
+Slice 1 is done: the eval corpus is in. `backend/evals/` holds a **pinned**
+manifest (URL + `sha256` for 20 lecture PDFs), `lecture_topics.tsv` ground truth,
+and a stdlib-only fetcher that refuses bytes whose hash does not match; the PDFs
+themselves are gitignored. **20 documents `ready`, 216 chunks, 216 embedded,
+`verify` clean on all 20.** Real material immediately found a Phase 1 bug —
+lecture 16 carries twelve U+0000 characters that Postgres `text` cannot store —
+fixed by `normalise_page_text`, the "one named function called by both" that
+`extraction.py`'s docstring had already reserved. **It substitutes U+0000 →
+U+FFFD rather than stripping**, because same-length is what keeps every stored
+`char_start`/`char_end` valid; a strip would pass a test that only checked the
+character was gone and silently shift every offset after it. Full reasoning in
+ROADMAP's "Settled in slice 1".
+
+Phase 3 is closed, tagged `phase-3-complete`. Its scope was syllabus parsing,
+filename inference, a manual override endpoint, and a UI showing each document's
+date and where that date came from. Documents that cannot be dated are surfaced,
+never silently defaulted. The load-bearing constraint was invariant 4 made
+concrete: **exactly one service function, `redate_document`, writes
+`documents.occurred_at`**, and all three dating paths route through it. It exists
+before there is anything to cascade to, because Phase 5 adds a write that must
+accompany every date change and no constraint can force it.
+
+One item is still carried forward: `documents` has no `ON DELETE CASCADE`, and
+the trigger for adding it is the condition **"first code path that deletes a
+`documents` row"** — not a phase. Phase 3's other carried item is done: the
+frontend test runner exists, and Phase 2's `describe()` assertions landed with
+it in slice 5.
 
 Slice 1 landed the funnel, migration `0005` (which adds `filename_date`, so the
 enum is four values, not ROADMAP's original three), and `PATCH

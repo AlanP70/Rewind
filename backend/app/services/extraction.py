@@ -4,13 +4,15 @@ One job: turn a PDF into one string per page. Those strings are the coordinate
 system every `chunks.char_start`/`char_end` indexes into, so this module has a
 rule it does not break:
 
-**The text is returned exactly as pdfplumber produced it. No stripping, no
-whitespace collapsing, no normalisation of any kind.**
+**The text is returned exactly as pdfplumber produced it, with one substitution:
+`normalise_page_text` below. No stripping, no whitespace collapsing, nothing
+else.**
 
 Any transformation applied here becomes part of the coordinate system, and
 `verify` re-extracts in a fresh process and compares byte for byte. A cleanup
 step that lives on only one of those two paths turns every offset into a lie.
-If normalisation is ever wanted, it goes in one named function called by both.
+That is why the one substitution there is lives in a named function called from
+`extract_pages` itself, which is the single door both paths go through.
 """
 
 import io
@@ -23,6 +25,35 @@ from pdfplumber.utils.exceptions import PdfminerException
 
 from app.core.paths import BACKEND_DIR
 from app.services.errors import ServiceError
+
+
+def normalise_page_text(text: str) -> str:
+    """Replace NUL with U+FFFD. This is the only normalisation this module does.
+
+    pdfminer emits a character per glyph, and a glyph whose font carries no
+    usable mapping comes out as whatever that font's encoding says -- twelve
+    times, on pages 6 and 7 of lecture 16 of the eval corpus, as U+0000.
+    Postgres `text` cannot store U+0000 at all, so those twelve characters
+    failed the whole document's chunk insert with a driver-level error that
+    named no page and no character.
+
+    **Same length in, same length out**, which is the reason it is a substitution
+    and not a strip. Every `chunks.char_start`/`char_end` indexes into the string
+    this module returns, so deleting a character would slide every offset after
+    it on that page -- silently, and only on the pages that happen to contain
+    one. A one-for-one swap cannot move an offset, and pages with no NUL are
+    returned unchanged, so nothing already ingested is affected.
+
+    U+FFFD rather than a space because it is the character pdfminer itself
+    already emits for an unreadable glyph -- twice, in lecture 9 of the same
+    corpus, which arrived with no NUL and no complaint. So this is not a
+    convention being invented here, and a reader who meets one has the same
+    thing to conclude either way: a glyph was here and could not be read. A
+    space would instead invent a word boundary the page does not have.
+    """
+    # Written as escapes on purpose: one of these two characters is invisible and
+    # the other is indistinguishable from a genuinely broken file encoding.
+    return text.replace("\x00", "\ufffd")
 
 
 def extract_pages(data: bytes, *, name: str) -> list[str]:
@@ -56,7 +87,9 @@ def extract_pages(data: bytes, *, name: str) -> list[str]:
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             # extract_text() returns None for a page with no text objects.
-            return [page.extract_text() or "" for page in pdf.pages]
+            return [
+                normalise_page_text(page.extract_text() or "") for page in pdf.pages
+            ]
     except PdfminerException as error:
         raise ServiceError(f"could not read {name} as a PDF: {error}") from error
 

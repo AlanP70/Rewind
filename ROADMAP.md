@@ -1704,6 +1704,60 @@ timeline with the first occurrence marked and every hit linked to its page.
   the right passage.
 - Timeline query latency is measured and recorded in the README.
 
+### Settled in slice 1 (the corpus)
+
+**The corpus is pinned, not just downloaded.** `backend/evals/corpus.tsv` records
+the URL, `sha256` and byte count of all 20 MIT 6.006 Spring 2020 lecture PDFs;
+`fetch_corpus.py` downloads them into a gitignored directory and **refuses to
+write bytes whose hash does not match**, printing both hashes and saying not to
+edit the expected one. The files are not committed — 4.8 MB of someone else's
+CC BY-NC-SA material that already has a canonical home — but the *measurement*
+has to be reproducible, and an unpinned fetch is the failure that arrives with no
+error attached: MIT re-renders a lecture, the eval scores differently, and the
+move reads as a retrieval regression. Proved able to fail both ways: a tampered
+file exits 1 naming it, and a wrong expected hash leaves nothing on disk.
+
+Lectures only. The 19 recitations are real material, but `lecture_topics.tsv` —
+the ground truth, which is MIT's own link text for each lecture, transcribed and
+not interpreted — says nothing about them, so including them would put documents
+in the corpus that the ground truth cannot rank.
+
+**Real material found a Phase 1 bug on the first pass: `MIT6_006S20_lec16.pdf`
+would not ingest.** pdfminer emitted U+0000 twelve times, on pages 6 and 7, for a
+maths glyph whose font mapping it could not read. Postgres `text` cannot store
+U+0000 at all, so the chunk insert failed the whole document with a driver-level
+error naming no page and no character. Nineteen of twenty PDFs were unaffected,
+which is the shape of this class of bug: it needs a specific font in a specific
+file, and no synthetic fixture would have produced it.
+
+The fix is `normalise_page_text` in `services/extraction.py` — the "one named
+function called by both" that module's docstring had already reserved a slot for
+before there was anything to put in it. Three things about it are load-bearing:
+
+- **It substitutes, never strips.** U+0000 → U+FFFD is one character for one
+  character, so no offset moves. Deleting the NUL would satisfy any test that
+  only checks the character is gone, and would slide every `char_start`/
+  `char_end` after it one place to the left — on the affected pages only, in a
+  document already ingested, with nothing to notice. That is invariant 3 failing
+  quietly, which is precisely the failure mode it exists to prevent.
+- **U+FFFD rather than a space**, because it is not a convention invented here:
+  pdfminer already emits U+FFFD for an unreadable glyph twice in lecture 9 of
+  this same corpus, which ingested without complaint. A space would invent a word
+  boundary the page does not have.
+- **It is called from `extract_pages`**, which is the single door both the
+  in-process path and the subprocess path go through, so `verify` re-extracts
+  the same substituted text and still compares byte for byte.
+
+The unit tests are pure and mutation-checked — swapping the substitution for a
+deletion fails both the real-input test and the length property. What they do
+*not* guard is that `extract_pages` calls the function at all, since the only
+input that proves it is a gitignored 260 KB PDF; that half was checked by running
+`verify` on lecture 16, which passes only if both extraction paths agree. Written
+down in the test module rather than left implied.
+
+Corpus state at the end of the slice: **20 documents `ready`, 216 chunks, 216
+embedded, `verify` clean on all 20.**
+
 ---
 
 ## Phase 5 — Concepts + canonicalisation
