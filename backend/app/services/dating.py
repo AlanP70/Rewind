@@ -434,7 +434,10 @@ async def date_course_from_syllabus(
     **The join is on the ordinal, not on topic text.** A syllabus gives an
     ordered, dated session list; a filename gives a session number. Matching
     `lecture 7` to `lecture 7` is exact, and slice 2 measured ordinal extraction
-    on 70 real filenames at 58 correct / 12 undated / **0 wrong**. Matching a
+    on 70 real filenames at **0 wrong** -- 58 correct and 12 undated then, 70
+    correct once `quiz` and `review` were fitted to those twelve. `0 wrong` is
+    the figure this join leans on, and it is the one the fitting left alone.
+    Matching a
     syllabus topic against a document's prose would be a similarity score --
     a new heuristic, with a new unmeasured error, replacing one that is already
     measured. There is no reason to take that trade.

@@ -67,6 +67,8 @@ _KINDS = {
     "session": "session",
     "class": "session",
     "day": "session",
+    "quiz": "quiz",
+    "review": "review",
 }
 
 # Longest first, so `lecture` wins before `lec` can match its prefix.
@@ -79,12 +81,24 @@ _ORDINAL = re.compile(
     rf"(?<![a-z0-9])({_KEYWORDS})[\s._-]*0*(\d{{1,2}})(?![0-9])", re.IGNORECASE
 )
 
-# `L3`, `l07`, `R12`. Restricted to a token that is *only* the letter and its
-# digits, because a bare `l` allowed to match anywhere finds one in half the
+# `L3`, `l07`, `R12`, `q1`. Restricted to a token that is *only* the letter and
+# its digits, because a bare `l` allowed to match anywhere finds one in half the
 # filenames in existence.
-_LETTER_ORDINAL = re.compile(r"(?<![a-z0-9])([lr])0*(\d{1,2})(?![a-z0-9])", re.IGNORECASE)
+#
+# `q` is the weakest entry here and is a deliberate trade. It reads as `quiz`,
+# but `q3.pdf` plausibly means *question* 3, and this class's whole premise is
+# that one letter is thin evidence. `_ORDINAL` running first covers the common
+# collision -- `ps5_questions.pdf` is pset 5 before `q` is ever consulted -- but
+# nothing covers a bare `q3.pdf` from a course where `q` means question. There
+# the ordinal is still right and only the *kind* is wrong, which puts the file
+# in its own interpolation sequence rather than the one it belongs to. The cost
+# is a worse candidate date; it is never a stored `occurred_at`, because
+# `inferred_filename` does not write one.
+_LETTER_ORDINAL = re.compile(
+    r"(?<![a-z0-9])([lqr])0*(\d{1,2})(?![a-z0-9])", re.IGNORECASE
+)
 
-_LETTER_KINDS = {"l": "lecture", "r": "recitation"}
+_LETTER_KINDS = {"l": "lecture", "q": "quiz", "r": "recitation"}
 
 _MONTHS = {
     name: number

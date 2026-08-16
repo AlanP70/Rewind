@@ -1147,6 +1147,35 @@ keyword map, and both were left out *after* the measurement rather than added
 before it — adding them would improve the number by construction and prove
 nothing, since this corpus is also the only evidence that those shapes exist.
 
+**Amended 2026-08-15: they were added, and the pinned figure is now 70 correct,
+0 undated, 0 wrong. The twelve new rows are fitted, not measured.** Slice 5's
+audit found these twelve were 100% of the extraction misses, which is a good
+reason to close the deferral and no reason at all to read the new number as an
+improvement — the sentence above still holds, and by construction is exactly
+what happened. Nothing was learned about `quiz` or `review` by scoring a rule
+against the rows that produced it; only a corpus from another course can say
+whether those shapes generalise.
+
+**What survives the fitting is 0 wrong on 70, and that is now the whole value of
+the figure.** Clearing the three decoys (`6`, `006`, `20`) is a property of the
+parser, not of its vocabulary, and the twelve new hits had to clear them like
+every other row. The breakdown stays three-way for the same reason as before: an
+aggregate would let `wrong` rise while `correct` compensates.
+
+`review` was a keyword addition. `quiz` needed both — the word for `quiz1.pdf`,
+and `q` alongside `l` and `r` in `_LETTER_ORDINAL`, because MIT writes `_q1` and
+no amount of keyword matching finds `quiz` in it. `q` is the weakest single
+letter in that class: `q3.pdf` plausibly means *question* 3. `_ORDINAL` is tried
+first, so `ps5_q3.pdf` is pset 5 and never quiz 3, and that ordering is pinned by
+the one fixture that can distinguish the two implementations — `ps5_questions.pdf`
+cannot, since `q` requires digits behind it. A bare `q3.pdf` from a course where
+`q` means question is not covered and is not coverable from the filename: the
+ordinal is still right and only the kind is wrong, which strands the file in its
+own interpolation sequence. That costs a worse candidate date and never a stored
+one, since `inferred_filename` does not write `occurred_at`. The trade is written
+next to the regex rather than only here, because that is where someone will be
+reading when it matters.
+
 **What that number does not cover, stated plainly because the shape of the gap
 matters more than the figure.** These filenames carry ordinals and no dates. So
 this measures *extraction* — surviving the three decoy numbers (`6`, `006`, `20`)
@@ -1203,8 +1232,9 @@ the measurement later says the interpolation is fine.
 
 **What would reverse this: a measured date accuracy for `inferred_filename`, on
 real course material whose real lecture dates are known.** Specifically not a
-larger filename corpus — that measures extraction, which is already measured at
-58/12/0 and is not the thing in doubt.
+larger filename corpus — that measures extraction, which is already measured
+(58/12/0 at the time, 70/0/0 once `quiz` and `review` were fitted) and is not the
+thing in doubt.
 
 Suggestions are computed per call and never stored. The interpolation range comes
 from whichever ordinals are present, so one more upload changes every suggestion
@@ -1512,7 +1542,13 @@ including slice 1's AST guard and slice 2's 58/12/0 corpus, both unchanged.
   tests — York schedules tutorials and `read_ordinal` would not recognise
   `tutorial-3.pdf`. Adding keywords after seeing the material is what slice 2
   declined to do with `quiz` and `review`, and the same applies: it belongs to a
-  measurement, not to this slice.
+  measurement, not to this slice. **Still deferred after `quiz` and `review` were
+  added on 2026-08-15**, and the difference is the point: those two were fitted to
+  rows in a labelled corpus that were 100% of its misses, so the cost of the
+  fitting is bounded and written down. `tutorial` has no corpus behind it at all —
+  no York filenames were ever collected, only a York syllabus — so adding it would
+  be a guess with nothing to score. The trigger is real filenames from a course
+  that runs tutorials.
 - **Word-coordinate extraction for calendar grids.** `pdfplumber` exposes the
   geometry the flattened text loses, so a grid is not unrecoverable in principle
   — only unrecoverable from the text, which is what this parser reads. It is a

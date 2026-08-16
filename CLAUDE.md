@@ -104,7 +104,13 @@ Slice 2 landed `services/filename_dates.py` — three pure functions over a stri
 plus the term, pure so the heuristic can be measured without a database — plus
 `date_course_from_filenames` and the `date-course` CLI command. **Measured on 70
 real MIT 6.006 filenames from OCW (committed as a labelled TSV): 58 correct, 12
-undated, 0 wrong.** That measures ordinal *extraction* against decoy numbers, not
+undated, 0 wrong.** The pin now reads **70 / 0 / 0**, because on 2026-08-15
+`quiz`, `review` and the `q` letter ordinal were added — the twelve undated rows
+were 100% of the misses, so **those twelve are fitted, not measured**, and a rule
+scored on the rows that produced it reaches 70 by construction. **0 wrong is the
+figure that survived and the only one to cite**: clearing the `6`/`006`/`20`
+decoys is a parser property, not a vocabulary one. That measures ordinal
+*extraction* against decoy numbers, not
 date accuracy; those filenames carry no dates, so `inferred_filename`'s date
 accuracy is **unmeasured and unclaimed**. Interpolation is expected to drift —
 real timetables are unevenly spaced, and the range depends on which files the

@@ -1,4 +1,4 @@
-"""Filename parsing, and the measured hit rate against a corpus nobody wrote for it.
+"""Filename parsing, against a corpus nobody wrote for it.
 
 Pure functions, so no database. The last test is the one that matters: it runs
 the parser over 70 real MIT 6.006 filenames and pins the outcome, broken down
@@ -7,6 +7,10 @@ different costs -- undated is honest and the UI is built to show it, wrong is th
 one that puts a lecture in the wrong week and quietly discredits the timeline --
 so an aggregate that lets one move while another compensates is the wrong number
 to watch.
+
+It now reads 70/0/0, and that is a weaker claim than 70/70 sounds. Twelve of the
+rows were fitted after the fact, and the reason to keep the pin anyway is 0
+wrong. See that test's docstring.
 """
 
 from datetime import date
@@ -87,6 +91,15 @@ def test_a_missing_year_the_term_cannot_settle_is_refused() -> None:
         ("Week 4 notes.pdf", ("week", 4)),
         ("pset3.pdf", ("pset", 3)),
         ("hw2 solutions.pdf", ("pset", 2)),
+        ("review2_sol.pdf", ("review", 2)),
+        # `quiz` is a keyword; `q` is a letter ordinal, like `l` and `r`.
+        ("quiz1.pdf", ("quiz", 1)),
+        ("mit6_006s20_q1.pdf", ("quiz", 1)),
+        # The `q`-means-question collision, and the only fixture here that can
+        # catch it: a letter-ordinal-first parser reads this as quiz 3, and
+        # `ps5_questions.pdf` would not tell the two apart because `q` needs
+        # digits behind it. Keywords are tried before single letters.
+        ("ps5_q3.pdf", ("pset", 5)),
         # Three decoy numbers before the real one.
         ("MIT6_006S20_lec18.pdf", ("lecture", 18)),
     ],
@@ -160,16 +173,20 @@ def test_the_corpus_is_the_size_it_claims_to_be() -> None:
 
 
 def test_measured_extraction_on_real_filenames() -> None:
-    """58 correct, 12 undated, 0 wrong, on 70 filenames written by MIT in 2020.
+    """70 correct, 0 undated, 0 wrong, on 70 filenames written by MIT in 2020.
 
-    The 12 are the three quizzes and three review sessions, with their solution
-    files -- `_q1`, `_review2`. Neither `quiz` nor `review` is in the keyword
-    map, and both were left out *after* this measurement rather than before it:
-    adding them here would improve this number by construction and tell us
-    nothing, since the corpus is also the only evidence that they exist.
+    **12 of those 70 are fitted, not tested.** The earlier run scored 58/12/0,
+    and the 12 undated were the three quizzes and three review sessions with
+    their solution files -- `_q1`, `_review2_sol`. `quiz`, `review` and the `q`
+    letter ordinal were then added *because of* these rows. A rule read off this
+    corpus and scored on this corpus reaches 70 by construction; those twelve
+    say nothing about whether the same shapes are recognised elsewhere, and only
+    a corpus from another course could.
 
-    **0 wrong is the load-bearing figure**, not 58 correct. Every one of these
-    names carries `6`, `006` and `20` in front of the ordinal, and a parser that
+    **0 wrong is what survives that**, and it is the load-bearing figure. Every
+    one of these names carries `6`, `006` and `20` in front of the ordinal, and
+    clearing those decoys is a property of the parser rather than of its
+    vocabulary -- the twelve new hits had to clear them too. A parser that
     grabbed the wrong number would produce a confident date in the wrong month.
 
     What this does not measure: whether an interpolated date is *right*. These
@@ -189,4 +206,4 @@ def test_measured_extraction_on_real_filenames() -> None:
         else:
             outcomes["wrong"] += 1
 
-    assert outcomes == {"correct": 58, "undated": 12, "wrong": 0}
+    assert outcomes == {"correct": 70, "undated": 0, "wrong": 0}
