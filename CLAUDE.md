@@ -106,6 +106,42 @@ otherwise and should not be); the file is served by our own route mirroring
 longitudinal across a degree is the product. The corpus is dated by hand as
 `manual`, because zero dated documents would leave the headline claim unmeasured.
 
+Slice 3 landed migration `0006`, the HNSW index, declared **both** in the
+migration and in `Chunk.__table_args__` so the operator class must be wrong twice
+to be wrong at all — an index whose opclass does not match `<=>` is never chosen
+and reports nothing. **It changed nothing measurable and the planner does not use
+it at 216 rows.** Every plan is a `Seq Scan`; forcing it gives 0.499 ms against
+the scan's 0.982 ms; client-observed latency is 44.44 ms against slice 2's 45 ms.
+**Not summed with the 42 ms** — halving 1 ms beside a 254 ms embedding call is
+not a faster search. Committed regardless, because the alternative is the same
+`CREATE INDEX` later against a full table under load; the number to re-measure as
+the corpus grows is **server-side execution time**, not the client-observed one.
+The exactness check — forced index versus exact scan, identical at k=10 and k=20
+over eight real queries — **could not have failed** and is recorded as evidence of
+nothing: 216 vectors with `ef_search` 40 reaches most of the graph. Recall at a
+size where the graph matters is unmeasured, so **the day the planner starts
+choosing this index, recall becomes an open question.**
+
+Slice 2 measured search with no index and found the latency is not where it
+looks: the scan over 216 chunks is ~1 ms server-side, while ~42 of the 45 ms a
+client sees is pgvector's **text protocol** serialising a 34 KB query vector.
+Established by holding plan, row count and result set constant and varying only
+float precision (43.99 ms → 1.84 ms). The asyncpg binary codec is **not a
+drop-in** — `pgvector.sqlalchemy.Vector` stringifies before the codec sees it —
+and is its own slice, after the index. `embed_query` lives in
+`services/embedding.py` because `MODEL` is the only thing making query and chunk
+vectors comparable; a search module naming its own model returns results ranked
+across two unrelated coordinate systems, which looks exactly like poor retrieval.
+`embedding IS NOT NULL` is not an optimisation: pgvector sorts null distances
+*last*, so without it a short result set is padded with unranked chunks.
+
+**Carried into slice 4's eval design:** page-1 header boilerplate ranking top-3
+gets **its own reported number** — how many queries had a page-1 chunk in the top
+3, and how many `first-wrong` cases were caused by one — not just absorption into
+the aggregate. It is not tuned away first: tuning before measuring means never
+knowing how bad it was or whether the fix worked, and the tally alone cannot
+separate "retrieval is weak" from "boilerplate is eating the top slots".
+
 Slice 1 is done: the eval corpus is in. `backend/evals/` holds a **pinned**
 manifest (URL + `sha256` for 20 lecture PDFs), `lecture_topics.tsv` ground truth,
 and a stdlib-only fetcher that refuses bytes whose hash does not match; the PDFs

@@ -178,6 +178,53 @@ true). Pass `embed=false` to skip the OpenAI call when you are testing the same
 PDF repeatedly; the document then stops at `processing`, because a document with
 no vectors cannot be searched and so is not `ready`.
 
+## Searching
+
+`POST /search` takes a query string and returns the nearest chunks by cosine
+distance, each carrying the page and character offsets that let the UI point at
+the passage. Course scoping is optional and off by default — searching across
+every course is the product, not a special case.
+
+```bash
+cd backend
+uv run python -m app.cli search "where did I first learn recursion" --repeat 5
+```
+
+`--repeat` runs the same query several times and prints the median and range,
+which is the only reason the numbers below can be quoted.
+
+### Where the time goes
+
+Measured against 216 embedded chunks across 20 documents (the MIT 6.006 eval
+corpus), local Docker Postgres 17 + pgvector, warm connection:
+
+| | median | range |
+|---|---|---|
+| OpenAI embedding call | 254 ms | 226–949 |
+| Postgres query, client-observed | 45 ms | 44–126 |
+| Postgres query, server-side execution | 1.2 ms | — |
+
+**The 45 and the 1.2 are not a contradiction, and the gap is not the database.**
+Holding the query plan, row count and result set constant and varying only the
+precision of the floats in the query vector moves the client number from 1.8 ms
+to 44 ms: a full-precision 1536-dimension vector is about 34 KB of text once
+pgvector has stringified it, and serialising and parsing that text is roughly
+42 of the 45 ms. It is a client-side encoding cost that a binary codec would
+address; it does not grow with the corpus.
+
+**The HNSW index (migration `0006`) changed nothing measurable, and at this size
+the planner does not use it.** A sequential scan over 216 rows costs less than
+the index does, so every plan above is a `Seq Scan`. Forcing the index with
+`enable_seqscan = off` gives 0.5 ms against the scan's 1.0 ms — a real
+improvement, on the 1 ms, invisible next to the 254 ms embedding call and the
+42 ms of encoding. **These do not add up:** the index attacks the smallest of
+the three numbers, and none of the other two moves.
+
+It is committed anyway because the alternative is discovering at ten thousand
+chunks that the scan is linear, and because an index built later against a full
+table is the same statement made under load. The number to re-measure is the
+server-side execution time, not the client-observed one.
+
 ## Supabase
 
 Production Postgres is Supabase; local is the Docker container. **Both version

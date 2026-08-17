@@ -1813,6 +1813,73 @@ stdout and stderr with `errors="replace"` — errors only, not encoding, because
 forcing UTF-8 onto a cp1252 console trades a crash for mojibake, and a `?` is
 honest where a glyph cannot be drawn. The stored text is untouched either way.
 
+### Settled in slice 3 (the HNSW index, which changed nothing measurable)
+
+Migration `0006` and a matching `Index(...)` in `Chunk.__table_args__`. Both,
+deliberately: the model declaration keeps autogenerate from proposing a drop, and
+it means **the operator class has to be wrong in two places to be wrong at all**.
+That redundancy is aimed at one specific failure — an index built for
+`vector_l2_ops` against a query that orders by `<=>` is not an error Postgres
+reports. It is simply never chosen, and the only symptom is an index that made no
+difference. This slice was always going to have to say "made no difference" out
+loud, so that sentence must not also be reachable by a typo.
+
+**The result, stated as the slice was told to state it: the index changed nothing
+measurable, and at 216 rows the planner does not use it.** Every plan is a
+`Seq Scan`, scoped or bare. Forcing it with `enable_seqscan = off` produces a
+real `Index Scan using ix_chunks_embedding_hnsw` at **0.499 ms** against the
+scan's **0.982 ms**. Client-observed latency is **44.44 ms median (43.60–47.70)**,
+against slice 2's 45 ms — unchanged, which is what "the index attacks the 1 ms"
+predicts.
+
+**These numbers are not summed.** Halving 1 ms next to a 254 ms embedding call
+and 42 ms of parameter encoding is not a 2× search, and reporting it as one would
+be the framing slice 2 wrote the warning against.
+
+It is committed anyway, and the reason is not that it helps now. A scan is linear
+and the index is not, so the choice is between a `CREATE INDEX` on a nearly empty
+table and the same statement later against a full one under load. **The number to
+re-measure when the corpus grows is the server-side execution time**, not the
+client-observed one, which is dominated by an encoding cost that does not grow
+with row count.
+
+**HNSW is approximate, so the index can change answers and not just speed.**
+Checked over eight real query embeddings: forced index scan versus exact scan
+agreed on all of them, identical rows in identical order, at k=10 and k=20.
+**That check could not have failed and is recorded as evidence of nothing** —
+216 vectors with the default `ef_search` of 40 means the search reaches most of
+the graph, so approximate and exact were never going to diverge. It is slice 4 of
+Phase 3's lesson again, on a fixture chosen this time knowing the rule: *a
+fixture guards a property only if the wrong implementation would answer
+differently on it.* Recall against a corpus large enough for the graph to matter
+is unmeasured, and the honest consequence is that **the day the planner starts
+choosing this index is the day recall becomes an open question** — not a
+regression to debug then, a measurement owed now and deferred knowingly.
+
+Also confirmed: the migration reverses and reapplies, and `alembic check` reports
+no pending operations, so the model and the database agree. Suite is 166.
+
+### Carried into slice 4 (the eval design)
+
+**Page-1 header boilerplate ranking top-3 is to be reported as its own number,
+not left to show up in the aggregate.** Searching the corpus surfaces first-page
+chunks — course code, lecture title, the same running header on every deck —
+above the passage that actually teaches the concept, because a header is short
+and topical and therefore close to a short topical query. It is not being tuned
+away first. Tuning before measuring means never knowing how bad it was, and
+never knowing whether the fix worked or the eval set simply moved; and a
+four-way tally that silently contains this cannot distinguish "retrieval is
+weak" from "retrieval is fine and boilerplate is eating the top slots", which
+have completely different repairs.
+
+So the eval reports, alongside `first-correct` / `first-wrong` / `not-found` /
+`unrankable`, recall@k and the keyword baseline: **how many queries had a
+page-1 chunk in the top 3, and how many of the `first-wrong` cases were wrong
+because of one.** The second is the number that decides whether it matters. If
+boilerplate never displaces a correct answer it is cosmetic, and the fix — a
+minimum chunk length, a header filter, a page-1 penalty — is one that should be
+argued for against a number it changes.
+
 ---
 
 ## Phase 5 — Concepts + canonicalisation

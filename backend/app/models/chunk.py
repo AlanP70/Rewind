@@ -4,6 +4,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
     ForeignKeyConstraint,
+    Index,
     Integer,
     Text,
     UniqueConstraint,
@@ -46,6 +47,16 @@ class Chunk(Base, CreatedAt):
         CheckConstraint("chunk_index >= 0", name="ck_chunks_chunk_index_non_negative"),
         CheckConstraint("char_start >= 0", name="ck_chunks_char_start_non_negative"),
         CheckConstraint("char_end > char_start", name="ck_chunks_char_end_after_start"),
+        # Cosine, matching the `<=>` in `repositories/search.py`. Declared here as
+        # well as in migration 0006 so autogenerate does not propose dropping it;
+        # the operator class is the part that has to agree with the query, and it
+        # now has to be wrong in two places to be wrong at all.
+        Index(
+            "ix_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -58,8 +69,9 @@ class Chunk(Base, CreatedAt):
 
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # Null until the embedding step fills it. No vector index yet -- Phase 4 adds
-    # one, once there are rows to build it from.
+    # Null until the embedding step fills it. Indexed for cosine search by the
+    # HNSW index in `__table_args__`; nulls are simply not in the index, which is
+    # why the search query filters them out itself.
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
 
     # Invariant 3: never null, and never backfillable. `char_start`/`char_end`
