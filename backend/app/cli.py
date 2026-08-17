@@ -17,6 +17,7 @@ from pathlib import Path
 from app.core.db import async_session
 from app.core.storage import get_storage, storage_key
 from app.models.user import SEED_USER_ID
+from app.repositories.search import count_embedded_chunks
 from app.schemas.ingestion import PlannedChunk
 from app.services.dating import (
     date_course_from_filenames,
@@ -27,6 +28,7 @@ from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
 from app.services.ingestion import create_course, plan_chunks
 from app.services.processing import embed_with_estimate, process_document
+from app.services.search import search
 from app.services.syllabus_schedule import ScheduleEntry
 from app.services.verification import verify_document
 
@@ -283,6 +285,88 @@ async def _embed(args: argparse.Namespace) -> int:
     return 0 if result.remaining == 0 else 1
 
 
+async def _search(args: argparse.Namespace) -> int:
+    """Run one query and show what came back, with both timings.
+
+    `--repeat` exists for the latency measurement rather than for searching: the
+    first query of a process pays for the connection pool and the first OpenAI
+    TLS handshake, so a single reading is mostly setup. The embedding is repeated
+    with the query, deliberately -- it is what a user actually waits for, and
+    separating the two numbers is what will show whether slice 3's index moved
+    the half it can move.
+    """
+    embed_times: list[float] = []
+    query_times: list[float] = []
+    results = None
+
+    async with async_session() as session:
+        for _ in range(args.repeat):
+            results = await search(
+                session,
+                user_id=SEED_USER_ID,
+                query=args.query,
+                limit=args.limit,
+                course_id=args.course_id,
+            )
+            embed_times.append(results.embed_ms)
+            query_times.append(results.query_ms)
+
+    assert results is not None  # --repeat is >= 1, enforced by argparse
+
+    for rank, hit in enumerate(results.hits, 1):
+        date_note = (
+            f"{hit.occurred_at:%Y-%m-%d} ({hit.occurred_at_source})"
+            if hit.occurred_at
+            else "undated"
+        )
+        print(
+            f"{rank:>3}. {hit.distance:.4f}  {hit.document_title} "
+            f"p{hit.page_number}  {date_note}"
+        )
+        print(f"      {_snippet(hit.content)}")
+
+    print(f"\n{len(results.hits)} hit(s) over {await _corpus_size(args.course_id)}")
+    print(f"  embed: {_timing(embed_times)}")
+    print(f"  query: {_timing(query_times)}")
+    return 0
+
+
+def _timing(samples: list[float]) -> str:
+    """Median and range, not a mean.
+
+    One slow sample -- a TLS handshake, an autovacuum -- drags a mean of five
+    readings far enough to change the conclusion, and the honest summary of a
+    handful of measurements is the middle one plus what the spread was.
+    """
+    if len(samples) == 1:
+        return f"{samples[0]:.1f} ms"
+    return (
+        f"{statistics.median(samples):.1f} ms median "
+        f"({min(samples):.1f}-{max(samples):.1f} ms over {len(samples)} runs)"
+    )
+
+
+async def _corpus_size(course_id: uuid.UUID | None) -> str:
+    """What the timings are a measurement *of*. A latency with no corpus size
+    next to it is not a result -- it cannot be compared to anything later."""
+    async with async_session() as session:
+        counts = await count_embedded_chunks(
+            session, user_id=SEED_USER_ID, course_id=course_id
+        )
+    scope = "this course" if course_id else "all courses"
+    return (
+        f"{counts.embedded_chunks} embedded chunk(s) in "
+        f"{counts.documents} document(s), {scope}"
+    )
+
+
+def _snippet(content: str, width: int = 96) -> str:
+    """One line of the passage. Newlines collapsed for the terminal only -- the
+    stored content is untouched, and its offsets still index the page."""
+    flat = " ".join(content.split())
+    return flat if len(flat) <= width else flat[: width - 3] + "..."
+
+
 async def _verify(args: argparse.Namespace) -> int:
     async with async_session() as session:
         report = await verify_document(
@@ -322,6 +406,19 @@ def main() -> int:
     # INFO is raised for `app` alone, not the root logger: httpx logs every
     # request at INFO, so a global INFO turns each embedding batch into a line of
     # URL noise between the lines worth reading.
+    # `search` prints real course material, and course material contains
+    # characters a Windows console code page cannot encode -- a Greek delta in a
+    # complexity bound is enough. Without this the command dies with
+    # UnicodeEncodeError partway down its own results, having already printed
+    # some, which reads as a bug in search rather than in printing.
+    #
+    # `errors` only, not `encoding`: the terminal's encoding is the terminal's
+    # business, and forcing UTF-8 onto a cp1252 console trades a crash for
+    # mojibake. A `?` where a glyph cannot be shown is honest, and the stored text
+    # -- which is what every offset indexes into -- is untouched either way.
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
+
     logging.basicConfig(level=logging.WARNING, format="%(message)s", stream=sys.stdout)
     logging.getLogger("app").setLevel(logging.INFO)
 
@@ -390,6 +487,24 @@ def main() -> int:
     )
     embed.add_argument("document_id", type=uuid.UUID)
     embed.set_defaults(handler=_embed)
+
+    searching = subcommands.add_parser(
+        "search", help="rank chunks against a question, nearest first"
+    )
+    searching.add_argument("query")
+    # No default course. Cross-course is the product, so scoping is the thing you
+    # have to ask for.
+    searching.add_argument(
+        "--course-id", type=uuid.UUID, help="search one course instead of all of them"
+    )
+    searching.add_argument("--limit", type=int, default=10)
+    searching.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="run the same query N times and report median latency and range",
+    )
+    searching.set_defaults(handler=_search)
 
     verify = subcommands.add_parser(
         "verify", help="re-extract a document's PDF and check every chunk's offsets"

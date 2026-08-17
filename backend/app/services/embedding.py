@@ -71,6 +71,29 @@ def estimate(chunks: list[Chunk]) -> EmbeddingEstimate:
     )
 
 
+async def embed_query(query: str) -> list[float]:
+    """One search query as a vector, using the model that embedded the chunks.
+
+    Lives here rather than in `services/search.py` for one reason: `MODEL` is the
+    only thing that makes a query vector and a chunk vector comparable. A search
+    module that named its own model would still return results -- ranked by the
+    distance between two unrelated coordinate systems, which is nonsense that
+    looks exactly like poor retrieval and would be debugged as if it were.
+    """
+    if not settings.openai_api_key:
+        raise ServiceError("OPENAI_API_KEY is not set, so a query cannot be embedded")
+
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    response = await client.embeddings.create(model=MODEL, input=[query])
+    vector = response.data[0].embedding
+
+    if len(vector) != EMBEDDING_DIMENSIONS:
+        raise ServiceError(
+            f"{MODEL} returned {len(vector)} dimensions, expected {EMBEDDING_DIMENSIONS}"
+        )
+    return vector
+
+
 async def pending_chunks(session: AsyncSession, document_id: uuid.UUID) -> list[Chunk]:
     return await chunks_repo.list_unembedded(session, document_id)
 

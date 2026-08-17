@@ -1758,6 +1758,61 @@ down in the test module rather than left implied.
 Corpus state at the end of the slice: **20 documents `ready`, 216 chunks, 216
 embedded, `verify` clean on all 20.**
 
+### Settled in slice 2 (search with no index, and where the latency actually is)
+
+`POST /search`, `services/search.py`, `repositories/search.py` and a `search` CLI
+command. Cosine distance (`<=>`), owner-scoped, course optional. The eligible-row
+rules are worth stating because each one fails silently if it is missing:
+`embedding IS NOT NULL` is not an optimisation — pgvector sorts a null distance
+*last* rather than dropping the row, so without it an under-full result set is
+padded with unranked chunks; and `user_id` is filtered now rather than at Phase 7,
+because the leaked row is not merely present, it is ranked wherever it lands.
+
+`embed_query` lives in `services/embedding.py`, not in the search module, because
+`MODEL` is the only thing that makes a query vector and a chunk vector
+comparable. A search module naming its own model would still return ranked
+results — ranked by distances between two unrelated coordinate systems, which
+looks exactly like poor retrieval and would be debugged as if it were.
+
+**The pre-index measurement, which is the point of doing this slice before the
+index. Corpus: 216 embedded chunks in 20 documents.**
+
+| | median | range |
+|---|---|---|
+| embedding the query (OpenAI round trip) | 254 ms | 226–949 |
+| the database query, client-observed | 45 ms | 44–126 |
+| the database query, server-side (`EXPLAIN ANALYZE`) | **1.16 ms** | — |
+
+The two numbers are reported separately because they answer different questions
+and an index can only touch one of them. What the gap between 45 ms and 1.16 ms
+turned out to be is the finding: **it is not the scan, it is sending the query
+vector.** pgvector's text protocol serialises 1536 full-precision floats to a
+34 KB literal that Postgres then parses. Swapping the same query to a vector of
+short floats — 9 KB of text, identical plan, identical row count — takes it from
+**43.99 ms to 1.84 ms**, a 24× difference with nothing else changed.
+
+So the honest statement of the pre-index position: the sequential scan over 216
+chunks costs about **1 ms**, and roughly **42 ms** goes on parameter encoding
+before the planner sees anything. An HNSW index attacks the 1 ms. **Slice 3 must
+therefore be able to report that the index changed nothing measurable and treat
+that as the result**, not go looking for a framing in which it won — and it must
+not quietly conflate the two numbers to produce an improvement.
+
+pgvector ships an asyncpg binary codec that would remove most of the 42 ms, and
+it is **not a drop-in**: `pgvector.sqlalchemy.Vector` has already turned the list
+into a string by the time the codec sees it, so `register_vector` on connect
+raises inside `Vector.__init__`. Measured and left unbuilt — the fix is a real
+change to how every vector binds, and it belongs to a slice that is about
+latency rather than being smuggled into one that is about measuring it.
+
+Also fixed here, and found by running the new command rather than by reasoning
+about it: the CLI died with `UnicodeEncodeError` partway down its own results,
+on a Greek delta in a complexity bound, because a Windows console code page
+cannot encode what real course material contains. `main()` now reconfigures
+stdout and stderr with `errors="replace"` — errors only, not encoding, because
+forcing UTF-8 onto a cp1252 console trades a crash for mojibake, and a `?` is
+honest where a glyph cannot be drawn. The stored text is untouched either way.
+
 ---
 
 ## Phase 5 — Concepts + canonicalisation

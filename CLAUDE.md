@@ -119,6 +119,19 @@ U+FFFD rather than stripping**, because same-length is what keeps every stored
 character was gone and silently shift every offset after it. Full reasoning in
 ROADMAP's "Settled in slice 1".
 
+Slice 2 landed search with no index: `POST /search`, `services/search.py`,
+`repositories/search.py`, a `search` CLI command, and 9 tests whose three
+load-bearing queries are mutation-checked (sort direction, owner filter, null
+embeddings). **The pre-index measurement over 216 embedded chunks in 20
+documents: the OpenAI round trip is 254 ms median, the client-observed query is
+45 ms, and the query's server-side execution is 1.16 ms.** The gap is not the
+scan — it is pgvector's text protocol serialising 1536 full-precision floats into
+a 34 KB literal. The same query with short floats runs in 1.84 ms instead of
+43.99 ms. **Consequence for slice 3: an HNSW index can only attack the 1 ms, so
+"the index changed nothing measurable" is a likely and acceptable result and must
+be reported as one.** The binary codec that would remove the 42 ms is measured
+and deliberately unbuilt; see ROADMAP's "Settled in slice 2".
+
 Phase 3 is closed, tagged `phase-3-complete`. Its scope was syllabus parsing,
 filename inference, a manual override endpoint, and a UI showing each document's
 date and where that date came from. Documents that cannot be dated are surfaced,
