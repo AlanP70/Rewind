@@ -2038,6 +2038,32 @@ without them uploading anything first.
   bounds a person confirms. Sequenced with Phase 7, since that is where the
   second user appears; the Phase 3 route may make it nearly free by then.
 
+- **The asyncpg binary codec for query vectors — measured, unbuilt, and now
+  deliberately deferred past Phase 4.** Slice 2 established the cost precisely:
+  ~42 of the 45 ms a client sees on a search is pgvector's text protocol
+  serialising 1536 full-precision floats into a 34 KB literal, and the same
+  query with short floats runs in 1.84 ms instead of 43.99 ms. The fix is real
+  and the number is not in doubt.
+
+  **It is deferred because it optimises a path that a 254 ms OpenAI round trip
+  dominates either way.** Removing all 42 ms takes the user-visible wait from
+  roughly 300 ms to roughly 260 ms — a 14% improvement on a figure nobody has
+  complained about, bought with a change to how *every* vector binds, since
+  `pgvector.sqlalchemy.Vector` stringifies before the codec sees it and
+  `register_vector` on connect therefore raises inside `Vector.__init__`. The
+  question Phase 4 exists to answer is whether retrieval returns the right
+  documents at all. Making a wrong answer arrive 40 ms sooner is not progress,
+  and doing it first risks spending the phase on the half that was already
+  measured instead of the half that isn't.
+
+  **Trigger: the embedding call leaving the request path.** The 42 ms is a fixed
+  cost per query — it does not grow with the corpus, so no amount of ingestion
+  brings this forward. What changes the arithmetic is anything that removes the
+  254 ms: cached query embeddings for repeated questions, a local embedding
+  model, or a batch path that embeds offline. On the day the round trip is gone,
+  encoding stops being 14% of the wait and becomes nearly all of it, and this
+  moves from an unjustifiable slice to an obvious one.
+
 - **A parsed schedule is not persisted anywhere, so a syllabus/filename conflict
   cannot survive the CLI invocation that produced it.** Slice 3's rule is that
   where the two disagree, *neither* date is stored and both come back as
