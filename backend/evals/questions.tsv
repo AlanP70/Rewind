@@ -1,0 +1,101 @@
+# The eval's questions. Committed before any scoring code exists, deliberately:
+# pre-registration only counts if the timestamps show it, and a question set
+# committed alongside its results is indistinguishable from one written after
+# seeing them.
+#
+# ---------------------------------------------------------------------------
+# What is MIT's here, and what is invented
+# ---------------------------------------------------------------------------
+#
+# MIT's, and therefore the part worth anything:
+#
+#   - the 20 documents, pinned by sha256 in `corpus.tsv`
+#   - what each lecture is about, in `lecture_topics.tsv`, which is MIT's own
+#     link text transcribed rather than interpreted
+#   - the lecture ORDER, which is what "first occurrence" is measured against
+#
+# Invented for this eval, and therefore the part that limits what the number
+# means:
+#
+#   - `query`. This is the largest degree of freedom in the whole measurement
+#     and the place a score gets inflated without anyone intending to.
+#   - `expected_first` and `relevant`, derived from MIT's titles by the rule
+#     below. The rule is mechanical; choosing it was not.
+#
+# The honest comparison to keep in mind: the filename measurement was worth
+# something because MIT wrote the filenames and the parser never saw them
+# while it was being designed. Here MIT wrote the topics but a person wrote
+# the questions, so this file is the eval's weakest link and is documented
+# accordingly.
+#
+# ---------------------------------------------------------------------------
+# The literal/paraphrase split, which is why this file has 16 rows and not 15
+# ---------------------------------------------------------------------------
+#
+# ROADMAP asks for 15 questions. This is 16, as 8 matched pairs, and the
+# deviation is deliberate: ROADMAP wrote 15 before this design existed, and a
+# clean 8+8 split is worth more than matching the number.
+#
+# Every topic appears twice, once per phrasing:
+#
+#   literal     - built from MIT's own title words.
+#   paraphrase  - the same concept with the title vocabulary removed.
+#
+# The reason is specific rather than theoretical. Page-1 headers in this corpus
+# repeat MIT's lecture title verbatim, so a query phrased from that title can be
+# answered by string overlap and reported as semantic retrieval. A literal
+# question and a keyword baseline are looking for the same characters.
+#
+# So the two kinds are reported as separate rows and are NEVER pooled into one
+# headline. Pooling averages a near-lexical match with a real one and hides
+# both. Matched pairs rather than two independent sets: same topic, same
+# expected answer, one variable changed, so the difference between the rows is
+# the phrasing and not the difficulty of the topic.
+#
+# Writing the paraphrases is the most invented thing in this eval. They are
+# committed here, before the scoring code, so they cannot be quietly reworded
+# after a bad run.
+#
+# ---------------------------------------------------------------------------
+# How `expected_first` and `relevant` were derived
+# ---------------------------------------------------------------------------
+#
+# `relevant`  - every lecture whose MIT title covers the topic.
+# `expected_first` - the lowest ordinal in `relevant`.
+#
+# Two consequences worth stating rather than discovering later:
+#
+#   - Ground truth is over TITLES, not contents. Sorting is arguably taught
+#     before lecture 3 and recursion appears long before any lecture names it,
+#     but MIT titles lecture 3 `Sorting`, so a hit on lecture 2 scores
+#     first-wrong even where a person would call it defensible. That is a floor
+#     on the achievable score and it is not retrieval's fault.
+#   - `relevant` drives recall@k; `expected_first` drives the four-way tally.
+#     Two relations out of one ground-truth file, both mechanical.
+#
+# Topics were chosen for having an UNARGUABLE relevant set. `Complexity`
+# (lecture 19) was considered and left out for exactly that reason: every
+# lecture in an algorithms course discusses complexity, so its relevant set
+# would have been a judgment call, and an arguable ground truth undermines the
+# thing the eval is for. The eight below are covered by MIT's titles and by
+# nothing else.
+#
+# ---------------------------------------------------------------------------
+# id<TAB>pair<TAB>kind<TAB>expected_first<TAB>relevant<TAB>query
+#
+q01	sorting	literal	3	3,5	Where did I first learn about sorting?
+q02	sorting	paraphrase	3	3,5	How do I rearrange a list so that every item comes before the ones larger than it?
+q03	hashing	literal	4	4	Where did I first learn about hashing?
+q04	hashing	paraphrase	4	4	How can I look up a key in constant time instead of scanning the whole collection?
+q05	binary-trees	literal	6	6,7	Where did I first learn about binary trees?
+q06	binary-trees	paraphrase	6	6,7	What structure stores items in nodes that each point to a left and a right child?
+q07	binary-heaps	literal	8	8	Where did I first learn about binary heaps?
+q08	binary-heaps	paraphrase	8	8	How do I repeatedly take the smallest item out of a changing collection quickly?
+q09	bfs	literal	9	9	Where did I first learn about breadth-first search?
+q10	bfs	paraphrase	9	9	How do I explore a graph outward from a starting vertex, one level at a time?
+q11	dfs	literal	10	10	Where did I first learn about depth-first search?
+q12	dfs	paraphrase	10	10	How do I walk a graph by following one route as far as it goes before backtracking?
+q13	dijkstra	literal	13	13	Where did I first learn Dijkstra's algorithm?
+q14	dijkstra	paraphrase	13	13	Which method finds the cheapest route from one vertex when no edge has a negative weight?
+q15	dynamic-programming	literal	15	15,16,17,18	Where did I first learn about dynamic programming?
+q16	dynamic-programming	paraphrase	15	15,16,17,18	How do I avoid recomputing the same subproblem by saving its answer the first time?
