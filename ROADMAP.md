@@ -2105,6 +2105,96 @@ reason. **A test that never passed is a test nobody knew was broken** — it sit
 the file looking like coverage, and the suite is green around it.
 
 
+### Settled in slice 5 (the timeline shape, and where the claim is allowed to live)
+
+**The backend shapes the timeline; the frontend renders it.** `POST /search` no
+longer returns a flat list of chunks — it returns documents already grouped,
+ordered and badged, via a new `search_timeline` service that is two steps and no
+third: `search` ranks chunks, `build_timeline` decides. The alternative
+considered and rejected was shaping in the browser, with `firstOccurrence` and
+`groupHits` as frontend pure functions. It was rejected for the same reason
+`timeline.py` exists at all: **the badge rule is the product's headline claim, and
+slice 4's numbers are that function's output.** A rule written in Python and again
+in TypeScript is a rule measured in one of the two places it runs, and the two
+diverge silently — which is the class of mismatch slice 4 had just finished
+closing between CLAUDE.md's promise and the code's behaviour. What crosses the
+wire is the decision, not the ingredients for making it again.
+
+**The claim's name crosses the wire.** The badge is a discriminated union in
+`schemas/search.py`, not a boolean and not a count: `earliest-match` (with the
+document ids in the tie), `undetermined` (with how many undated documents
+matched), `no-matches`. The discriminator is the field `claim`, and it reaches
+OpenAPI as one. Switching on `earliest_count == 0` instead would collapse the
+last two, which are the same absence of a badge for opposite reasons and need
+different sentences: *nothing matched* versus *something matched that has no
+date*. Putting the union in the API schema rather than only in the frontend types
+means a variant added later cannot be rendered with an old variant's words by
+accident — the renderer fails to compile instead.
+
+**Three structural guards, each one a signature or a field list rather than a
+comment.** Slice 4 settled that there is no relevance threshold; these are what
+make re-adding one visible rather than easy:
+
+1. **`badge_earliest(dates)` takes dates and nothing else.** The whole badge rule
+   is now one function whose parameter is `Sequence[datetime | None]` — no
+   distances, no ranks, no hit counts. A threshold cannot be added without
+   widening that signature, and a test asserts the parameter list. The cheapest
+   way to make that test pass again is to edit the list, which is exactly the
+   point: it puts the change in the diff beside the sentence saying what it costs.
+2. **No cutoff field in the search contract**, guarded by a test pinning
+   `SearchRequest`'s fields exactly. `limit` is a cap on how much is *retrieved*;
+   everything retrieved reaches the timeline and is counted. `min_similarity`
+   would change the badge from "earliest of what matched" to "earliest above a
+   number nobody can justify" — a different product promise wearing the clothes of
+   a parameter.
+3. **`documents_considered` is required, has no default, and is computed at
+   grouping time** — before the dated/undated split and before anything
+   downstream could filter. The plausible wrong implementation is
+   `len(timeline.dated)`, which is correct on every fixture where nothing is
+   undated and quietly turns "earliest of 3" into "earliest of 2" in precisely the
+   case where the badge is suppressed and the count is doing all the explaining.
+   The fixture that guards it is therefore two dated documents and one undated.
+
+**A hit on the wire carries no date of its own.** `TimelineHit` is chunk-level
+only — page and offsets for the deep link, content, distance — because
+`occurred_at` on a passage would let a renderer place one passage in the timeline
+independently of its document, which is how "hits group per document" comes undone
+one component at a time. For the same reason `best_distance` is not carried out of
+the service: it exists to break a date tie, that ordering is already applied, and
+a relevance number on the group is the field a renderer eventually sorts by.
+
+**`build_timeline` was mutation-checked for the first time**, which it should have
+been in slice 4 given that it carries the phase's headline behaviour. Four
+mutants, four caught, and each by a *different* test rather than by the same
+broad one: never suppressing the badge fails the two suppression tests; badging
+only one document in a tie fails the tie test; counting only dated documents fails
+the `documents_considered` test; collapsing `undetermined` into `no-matches` fails
+the wire-shape test. On the frontend, a `badgeFor` that ignores a suppressed claim
+fails its own test — the renderer undoing the suppression rule on the way to the
+screen is a real path, not a hypothetical one.
+
+**The caveat ships in the interface, not only here.** `describeTimeline.ts` holds
+the two presentation functions, and the sentence beside a shown badge is *"the
+oldest of what this search found — not necessarily the first time this appeared in
+your material."* A test asserts that phrase is present and that the headline is
+`Earliest match`. "Earliest match" and "first occurrence" read almost identically
+unless the interface says otherwise, and a copy-edit that reintroduces the
+stronger word is the likeliest way this decision gets lost.
+
+**Verified against the real corpus, and it demonstrates the slice 4 finding rather
+than hiding it.** Cross-course, `depth-first search` returns `undetermined` — two
+undated documents from a second local course matched, so the badge is correctly
+suppressed. Scoped to the eval corpus, `dynamic programming` badges **lecture 2**,
+where the phrase appears in passing, over lectures 15–18 where it is actually
+taught and where lecture 16 alone has seven hits. That is the honest output of an
+honest claim: the badge says earliest *match*, and lecture 2 is the earliest
+match. It is also exactly the query that would have read as a wrong answer under
+the old "first occurrence" wording.
+
+Backend suite is 207, frontend 26. The rendering components and the `/search`
+page are the next slice; nothing in this one renders yet.
+
+
 ---
 
 ## Phase 5 — Concepts + canonicalisation
