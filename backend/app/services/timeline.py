@@ -14,10 +14,22 @@ consequence of how weakly this corpus is dated:
 - **A tie for earliest badges every document in the tie**, labelled earliest and
   counted. Picking one would invent a precision the dates do not have.
 - **The badge is suppressed entirely whenever any undated document also
-  matches.** "First" is a claim about the whole corpus, and an undated match
-  could precede everything shown. Undated matches are still returned, grouped
-  and visible -- never dropped, because dropping them would make the suppressed
-  badge look like a bug rather than an answer.
+  matches.** An undated match's position in the ordering is unknown, so
+  "earliest match" is undetermined rather than merely unproven. Undated matches
+  are still returned, grouped and visible -- never dropped, because dropping them
+  would make the suppressed badge look like a bug rather than an answer.
+
+**What the badge claims, settled in slice 4: "earliest match" -- the oldest of
+the documents this query retrieved. Not "first occurrence in the corpus".** The
+distinction is the whole reason there is no relevance threshold in this module.
+Every document that matched counts, because the alternative is a cutoff that
+decides where mention ends and teaching begins, and nothing in the ground truth
+encodes that line. Four such rules were measured and all four were rejected;
+they are recorded in ROADMAP's "Settled: stop claiming first" so they are not
+re-proposed. **A caller that adds a threshold here is changing what the product
+promises, not tuning it** -- and the stronger claim needs a different query shape
+entirely (filter-then-sort-by-date over the corpus, not top-k), which is why it
+is Deferred rather than a constant waiting to be picked.
 """
 
 from dataclasses import dataclass

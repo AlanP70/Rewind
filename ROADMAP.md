@@ -1704,6 +1704,17 @@ timeline with the first occurrence marked and every hit linked to its page.
   the right passage.
 - Timeline query latency is measured and recorded in the README.
 
+> **Corrected during slice 4.** The goal, deliverable and done-when above say
+> "first occurrence" and are left as written, because they are what the phase set
+> out to build and the record of that is worth keeping. **What shipped is
+> narrower and deliberately so: the badge reads "earliest match" — earliest among
+> the documents a query retrieved — and the timeline states how many documents
+> were considered.** "First occurrence in the corpus" is a strictly stronger claim
+> that this architecture cannot verify; it is a Deferred item with its own query
+> shape and its own ground-truth cost. See "Settled: stop claiming first" below.
+> Read every "first occurrence" above as "earliest match".
+
+
 ### Settled in slice 1 (the corpus)
 
 **The corpus is pinned, not just downloaded.** `backend/evals/corpus.tsv` records
@@ -1966,33 +1977,121 @@ every matching document, **without asking what counts as matching**. That
 omission is the bug, and it belongs to the design, not to the implementation —
 the code does precisely what it was told.
 
-#### Open question, stated before any answer: what counts as a match?
+#### Settled: stop claiming "first", claim what the system can verify
 
-**No fix is proposed here, deliberately.** The question is worth stating on its
-own before a mechanism gets attached to it, because the obvious mechanism — a
-similarity cutoff below which a document is not "matched" — is not free, and the
-cost is semantic rather than technical:
+Four candidate rules were measured against the eval before anything was decided.
+**The measurement's most important output is not a score, and it has to be read
+first, because it invalidates the scores.**
 
-**A threshold changes what the product claims.** "First among matches" is a
-strong, checkable statement about the corpus. "First above some similarity
-cutoff" is weaker and more arbitrary: the answer moves when the cutoff moves,
-the cutoff has no principled value, and a document that genuinely taught the
-concept can fall below it and vanish from a claim about *first*. That is a worse
-failure than the current one, because the current one is visible — a wrong badge
-on screen — and that one is silent.
+**A rule that returns one document cannot be wrong about order and cannot be
+right about it either.** Every one of these rules works by discarding documents,
+so the harder it filters the closer it comes to returning a single document — at
+which point "the earliest of these" is a statement about a set of size one. The
+eval scores that as `first-correct`. It is not an ordering result at all:
 
-So if a threshold is taken, **the caveat ships in the UI, not only here.** The
-interface has to say what "first" now means, in the same way the badge is already
-suppressed rather than guessed when an undated document matches. A cutoff that
-lives in a constant and is explained in a ROADMAP is exactly the invented
-precision this phase has refused three times.
+| rule | mean documents surviving | scored correct | **badged on a single document** |
+|---|---|---|---|
+| current (no filter) | 7.9 | 2/16 | 0/16 |
+| B: top 3 documents | 3.0 | 9/16 | 0/16 |
+| C: minimum 3 hits | 2.9 | 11/16 | 0/16 |
+| C: minimum 4 hits | 2.1 | 13/16 | 5/16 |
+| D: rank-weighted, θ=0.3 | 2.2 | 13/16 | 5/16 |
+| D: rank-weighted, θ=0.5 | **1.6** | **14/16** | **8/16** |
 
-Alternatives exist and are unranked on purpose — a cutoff on distance, a cap on
-documents rather than chunks, a minimum number of hits per document before it
-counts, or badging by rank-weighted evidence rather than by bare presence. Each
-one redefines "matched" differently and each owes the same UI sentence. **The
-decision is which claim the product wants to make, and that is not a tuning
-exercise.**
+The best-scoring rule badges a lone document in half of all questions. On the
+ordering questions specifically it leaves `q01 -> [3]`, `q05 -> [6]`,
+`q06 -> [6]` — one survivor each. **Its 14/16 is substantially the score for
+answering "which lecture is most about X" and printing the word *first* above
+the answer.**
+
+The eval rewards this structurally and cannot help it: **10 of the 16 questions
+have exactly one relevant lecture**, so for them `expected_first` *is* the
+most-relevant document and "first" is indistinguishable from "best". The part of
+the eval that tests ordering at all is the other 6 questions — 3 topics with two
+phrasings each, so **three independent trials.** C at 5/6 and D at 6/6 are not
+distinguishable, and nothing built on this corpus can distinguish them.
+
+##### The framing error underneath it
+
+Two different promises were being made at once, and that is the actual defect:
+
+- **"When did I first learn X"** — a claim about the whole corpus. Requires that
+  the earliest teaching occurrence be *retrieved*. Fails silently and without
+  bound.
+- **"Which of these lectures came earliest"** — a claim about the result set.
+  Self-verifying, cheap, much weaker.
+
+`build_timeline` implements the second. The product description, the eval's
+ground truth, and — most tellingly — **the badge-suppression rule** all grade it
+as the first. Suppressing the badge because an undated document might precede
+everything only makes sense if "first" is a claim about the whole corpus.
+
+**The decision: the product claims the second, and says so.** The badge reads
+**"earliest match"**, the timeline shows **how many documents were considered**,
+and **no threshold is introduced**. This is true under the current rule with zero
+tuning and no constant to defend, and it is the only option on the table that
+does not make a weak claim sound like a strong one.
+
+**The suppression rule survives, with a different justification, and must not be
+"simplified" later.** It no longer stands because "first is a claim about the
+whole corpus"; it stands because an undated match's position in the ordering is
+*unknown*, so "earliest match" is undetermined rather than merely unproven. Same
+behaviour, different reason, and the reason is what a future reader will use to
+decide whether the rule is still needed.
+
+##### The four rules, recorded so they are not re-proposed
+
+Each is stated as the sentence a user would read, which is the level at which
+they differ.
+
+**A. Distance cutoff** — *"The earliest lecture whose text is at least this
+similar to your question."* Fails by silent omission: a document that taught the
+concept in unlike wording drops below the bar and disappears from a claim about
+*first*, leaving a confident badge on the wrong lecture with no sign anything was
+removed. Vector distances here span only 0.38–0.71, so the band between "teaches
+hashing" and "mentions a hash" is thin — cutting at 0.50 produces **7
+`not-found` of 16**. And keyword distance is `1 - fraction of terms matched`, a
+different scale entirely, so **one τ cannot serve both rankers** and the baseline
+comparison would need two separately-tuned constants.
+
+**B. Cap on documents** — *"The earliest of the N lectures that best match your
+question."* Never collapses at N>=2 (0/16 solo), so it always makes a real
+ordering claim; scores 9/16. Fails when a topic genuinely spans more than N
+lectures — dynamic programming covers four, so at N=3 one is structurally
+unreachable. From the outside the badge is right and the timeline is truncated,
+with no way to tell three occurrences from eleven, which damages precisely the
+longitudinal claim the product exists for.
+
+**C. Minimum hits per document** — *"The earliest lecture that spends real time
+on your question, not just a passing mention."* The only user-facing sentence
+here that is defensible on its own terms. At m=3 it never collapses (0/16 solo,
+mean 2.9 documents) and scores 11/16. **Its failure is concentrated exactly on
+first occurrences**, which is the worst available place for it: the one slide
+where recursion is first defined is a single chunk, and that slide is the answer
+to "where did I *first* learn recursion". The badge lands on the lecture that
+covered the topic thoroughly rather than the one that introduced it.
+
+**D. Rank-weighted evidence** — *"The earliest lecture your question strongly
+points to."* That sentence is close to meaningless, and that is the finding.
+Highest score (14/16) and the worst collapse (8/16 solo). θ has no units and no
+interpretation, so "why was lecture 7 not in my timeline" answers "its summed
+reciprocal rank was under 0.5x the top document's".
+
+**All four decide the same undecidable thing: where mention ends and teaching
+begins.** That line is not in the ground truth and cannot be read out of it. MIT's
+titles say what each lecture *taught*; nothing anywhere says which lectures
+mention hashing in passing.
+
+##### The recall ceiling, recorded so no one later reaches for a constant
+
+**`recall@20 = 1.00` is an artifact of corpus size, not a property of retrieval.**
+Twenty documents is small enough that twenty chunks span the corpus. At five
+hundred it will not, and **no threshold fixes that, because a threshold can only
+remove documents and never add the one that was missed.** The strong promise is a
+*query-shape* problem: it needs filter-then-sort-by-date over everything above a
+relevance bar, not top-k retrieval followed by grouping. Tuning a constant will
+look like progress on it and cannot be.
+
 
 Suite is 198. Both fixes that unblocked it are their own commits: `keyword_chunks`
 raised `NameError` on a missing `case` import, and
@@ -2093,6 +2192,38 @@ without them uploading anything first.
 ---
 
 ## Deferred — operational concerns with no phase yet
+
+- **"When did I first learn X", as a complete claim about the corpus, is a
+  separate feature with a different architecture — not a threshold on this one.**
+  Phase 4 settled that the badge claims **"earliest match"**: earliest among the
+  documents this query retrieved, which is verifiable and is what the code
+  actually computes. The strong claim — *earliest in the corpus, whether or not
+  this query surfaced it* — was measured, found undecidable on the available
+  ground truth, and deliberately not built. See Phase 4's "Settled: stop claiming
+  first".
+
+  **Trigger, condition not phase: the first time someone needs "when did I first
+  learn X" to be complete rather than "earliest of what matched".** A user
+  disputing a badge because they know an earlier lecture covered it is that
+  moment. Corpus growth alone is not — it makes the gap wider, not visible.
+
+  **It cannot be reached by tuning, and that is the point of recording it here.**
+  A relevance threshold can only remove documents from a result set; it can never
+  add the earlier one that top-k never retrieved. The strong claim needs
+  **filter-then-sort-by-date over every document above a relevance bar** — a scan
+  shaped like `WHERE relevance > bar ORDER BY occurred_at LIMIT 1`, not top-k
+  chunks grouped after the fact. Different index, different query, different cost
+  model. Phase 4's `recall@20 = 1.00` says nothing about whether this works,
+  because 20 documents is small enough that 20 chunks span the corpus.
+
+  **It also needs ground truth that does not exist yet, and the cost is
+  quantified: about 320 judgements** — 20 documents x 16 topics, each labelled
+  *teaches / mentions / neither*. That is the labelling the four rejected rules
+  all needed and none of them had, because MIT's lecture titles record what a
+  lecture taught and are silent on what it mentions in passing. Any future
+  proposal here that does not budget for those labels is proposing an unmeasurable
+  feature.
+
 
 - **Revisit the Supabase session pooler's connection cap before this has real
   concurrent users.** Two options: the direct connection with the IPv4 add-on, or

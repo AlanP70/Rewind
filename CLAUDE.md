@@ -2,8 +2,18 @@
 
 Longitudinal learning archive. A student uploads course material, asks
 *"where did I first learn recursion?"*, and gets a chronological timeline of
-every place that concept appeared — first occurrence marked, each hit linking to
-the exact page and passage in the source.
+where that concept appears in their own material — **the earliest match badged**,
+each hit linking to the exact page and passage in the source.
+
+**"Earliest match", not "first occurrence", and the wording is load-bearing.**
+The timeline orders the documents a query retrieved and badges the oldest of
+them. It does *not* claim to have found the first time the concept ever appeared
+in the corpus — that is a strictly stronger promise, it needs a different query
+shape and ground truth this project does not have, and it is a Deferred item
+rather than a tuning exercise. Phase 4 measured four ways to close the gap and
+rejected all four; the reasoning is in ROADMAP's "Settled: stop claiming first".
+**The two promises coexisted unnoticed in this file for three phases**, which is
+how `build_timeline` came to answer one while the eval graded it on the other.
 
 Full detail: `ARCHITECTURE.md`. Phase plan: `ROADMAP.md`.
 
@@ -83,10 +93,13 @@ so a date that is stored was either stated by a syllabus, stated by a filename,
 or set by a person, and all three are worth trusting. The consequences:
 **the timeline is an ordering, not a scale** — no proportional time axis, no
 month gaps drawn to size, because interpolated spacing is exactly the precision
-we do not have; and **the first-occurrence badge is suppressed whenever any
-undated document also matches**, since "first" is a claim about the whole corpus
-and an undated match could precede it. Undated matches are shown, grouped, never
-silently dropped.
+we do not have; and **the earliest-match badge is suppressed whenever any
+undated document also matches**, because an undated match's position in the
+ordering is unknown, so "earliest match" is undetermined rather than merely
+unproven. (That justification replaced an earlier one — "first is a claim about
+the whole corpus" — when slice 4 settled what the badge claims; same behaviour,
+and the reason is what a future reader will use to decide the rule is still
+needed.) Undated matches are shown, grouped, never silently dropped.
 
 **Slice 4 answered the phase's real question and the answer is no: vector search
 did not beat the keyword baseline.** 16 pre-registered questions, top 20 of 40:
@@ -124,18 +137,50 @@ Expected lecture at rank 1: vector **11/16** against keyword 8/16; in the top 3,
 20, because retrieval *breadth* is penalised. `SCORE_AT` was not tuned; the 20 is
 pre-registered and the depth table is diagnosis, not a replacement metric.
 
-**Open question, deliberately stated before any answer, and no fix is to be built
-until it is decided: what counts as a match?** The obvious mechanism is a
-similarity cutoff, and its cost is semantic. "First among matches" is a strong
-checkable claim; **"first above some cutoff" is weaker and more arbitrary** — the
-answer moves when the cutoff moves, the cutoff has no principled value, and a
-document that genuinely taught the concept can fall below it and vanish from a
-claim about *first*. That failure is silent where the current one is visible. **If
-a threshold is taken, the caveat ships in the UI, not only in the ROADMAP**, the
-way the badge is already suppressed rather than guessed when an undated document
-matches. Alternatives are unranked on purpose: a distance cutoff, a cap on
-documents, a minimum hits-per-document, or badging by rank-weighted evidence.
+**Settled, and the lead finding is the one that invalidates the scores: a rule
+that returns one document cannot be wrong about order and cannot be right about
+it either.** Four candidate badge rules were measured. All of them work by
+discarding documents, so the harder one filters the closer it comes to returning
+a single document, at which point "earliest of these" describes a set of size
+one — and the eval scores that `first-correct`. The best scorer (rank-weighted,
+θ=0.5) reaches 14/16 while badging a **lone document in 8 of 16 questions**,
+mean 1.6 surviving. Its score is largely for answering "which lecture is most
+about X" and printing *first* above it. The eval cannot resist this: **10 of 16
+questions have exactly one relevant lecture**, so "first" and "best" are the same
+document; only 6 test ordering, and they are 3 topics x 2 phrasings, so **three
+independent trials.** No rule ranking built on this corpus is trustworthy.
 
+**Underneath it was a framing error: two promises were being made at once.**
+"When did I first learn X" is a claim about the whole corpus and fails silently.
+"Which of these lectures came earliest" is a claim about the result set and is
+self-verifying. `build_timeline` implemented the second; the product
+description, the eval's ground truth and the badge-suppression rule all graded it
+as the first.
+
+**The decision: the badge reads "earliest match", the timeline shows how many
+documents were considered, and no threshold is introduced.** True under the
+current rule with zero tuning and no constant to defend. All four alternatives —
+distance cutoff, document cap, minimum hits per document, rank-weighted evidence
+— are recorded in ROADMAP with their user-facing sentence and failure mode so
+they are not re-proposed. **They all decide the same undecidable thing: where
+mention ends and teaching begins**, a line MIT's titles do not encode.
+
+**The suppression rule survives with a different justification and must not be
+"simplified" later.** It no longer stands because "first is a claim about the
+whole corpus"; it stands because an undated match's position is *unknown*, so
+"earliest match" is undetermined rather than merely unproven.
+
+**`recall@20 = 1.00` is an artifact of corpus size and must not be read as
+retrieval being solved.** Twenty documents is small enough that twenty chunks
+span the corpus; at five hundred it will not, and **no threshold fixes that,
+because a threshold can only remove documents and never add the one that was
+missed.** The strong promise is a query-shape problem — filter-then-sort-by-date
+over everything above a relevance bar, not top-k — and it is Deferred, triggered
+by the first time someone needs "when did I first learn X" to be *complete*
+rather than "earliest of what matched". Its ground-truth cost is quantified at
+**about 320 judgements** (20 documents x 16 topics, each *teaches / mentions /
+neither*); any proposal that does not budget for those is proposing an
+unmeasurable feature.
 Settled by decision, not to be re-opened: hits group **per document**, not per
 chunk; a tie for earliest badges **both, labelled earliest, with the count**;
 the PDF opens in the **native viewer at the right page** and **the passage
