@@ -411,30 +411,39 @@ async def test_keyword_tie_break_does_not_look_at_dates(
     early, late = uuid.UUID(int=1), uuid.UUID(int=2)
 
     async def order_for(first_date: datetime, second_date: datetime) -> list[uuid.UUID]:
-        await make_text_document(
-            session,
-            course=course,
-            title="one",
-            passages=["a graph"],
-            occurred_at=first_date,
-            chunk_ids=[early],
-        )
-        await make_text_document(
-            session,
-            course=course,
-            title="two",
-            passages=["a graph"],
-            occurred_at=second_date,
-            chunk_ids=[late],
-        )
-        hits = await keyword_chunks(
-            session, user_id=SEED_USER_ID, terms=["graph"], limit=10
-        )
-        return [hit.chunk_id for hit in hits]
+        # A savepoint, not `session.rollback()`. The second run reuses the same
+        # two chunk ids on purpose -- holding the ids fixed is what makes the
+        # tie-break observable -- so the first run's rows have to be gone before
+        # it starts. A full rollback would take the `course` fixture with them
+        # and the second run would fail on the foreign key instead of on the
+        # thing under test.
+        savepoint = await session.begin_nested()
+        try:
+            await make_text_document(
+                session,
+                course=course,
+                title="one",
+                passages=["a graph"],
+                occurred_at=first_date,
+                chunk_ids=[early],
+            )
+            await make_text_document(
+                session,
+                course=course,
+                title="two",
+                passages=["a graph"],
+                occurred_at=second_date,
+                chunk_ids=[late],
+            )
+            hits = await keyword_chunks(
+                session, user_id=SEED_USER_ID, terms=["graph"], limit=10
+            )
+            return [hit.chunk_id for hit in hits]
+        finally:
+            await savepoint.rollback()
 
     march, may = datetime(2020, 3, 1, tzinfo=UTC), datetime(2020, 5, 1, tzinfo=UTC)
     one_way = await order_for(march, may)
-    await session.rollback()
     other_way = await order_for(may, march)
 
     assert one_way == other_way == [early, late]
