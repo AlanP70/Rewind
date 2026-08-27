@@ -32,19 +32,29 @@ entirely (filter-then-sort-by-date over the corpus, not top-k), which is why it
 is Deferred rather than a constant waiting to be picked.
 """
 
+import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
 from app.models import OccurredAtSource
-from app.schemas.search import SearchHit
+from app.schemas.search import (
+    EarliestMatch,
+    NoMatches,
+    SearchHit,
+    TimelineEntry,
+    TimelineHit,
+    TimelineResults,
+    Undetermined,
+)
 
 
 @dataclass(frozen=True)
 class TimelineDocument:
     """Every hit that landed in one document, plus where that document sits."""
 
-    document_id: object
-    course_id: object
+    document_id: uuid.UUID
+    course_id: uuid.UUID
     document_title: str
     course_name: str
     occurred_at: datetime | None
@@ -66,6 +76,13 @@ class Timeline:
     dated: tuple[TimelineDocument, ...]
     undated: tuple[TimelineDocument, ...]
 
+    # How many documents matched at all, counted before the dated/undated split
+    # and before anything downstream could filter. The badge is a claim about
+    # exactly this many documents, and "earliest of 2" and "earliest of 19" are
+    # different claims -- so this travels beside the badge rather than being left
+    # for a caller to derive from whatever survived to the end.
+    documents_considered: int
+
     # How many documents share the earliest date. 2 is a real answer and renders
     # as "earliest (2)"; 0 means nothing was badged.
     earliest_count: int
@@ -74,6 +91,26 @@ class Timeline:
     # undated match could precede it" from "no badge because nothing matched",
     # which look identical from `earliest_count` alone.
     badge_suppressed: bool
+
+
+def badge_earliest(dates: Sequence[datetime | None]) -> datetime | None:
+    """The badge rule, whole: which date is badged, or `None` for no badge.
+
+    **The signature is the guard.** It takes dates and nothing else -- no
+    distances, no ranks, no hit counts -- so the badge cannot come to depend on
+    relevance without someone widening this parameter and having to say why in
+    the diff. Slice 4 settled that there is no relevance threshold here; this is
+    the structural half of that decision, and the module docstring is the prose
+    half.
+
+    `None` in, `None` out: a single undated document leaves the earliest
+    undetermined for every document, because an undated one could precede them
+    all. An empty sequence also returns `None` and means something different to a
+    reader, so the caller keeps the two apart -- see `Timeline.badge_suppressed`.
+    """
+    if any(date is None for date in dates):
+        return None
+    return min(dates, default=None)
 
 
 def build_timeline(hits: list[SearchHit]) -> Timeline:
@@ -95,10 +132,10 @@ def build_timeline(hits: list[SearchHit]) -> Timeline:
     badge_suppressed = bool(undated)
     earliest_count = 0
 
-    if dated and not badge_suppressed:
-        earliest = min(document.occurred_at for document in dated)
+    badged_date = badge_earliest([document.occurred_at for document in documents])
+    if badged_date is not None:
         dated = [
-            _badged(document, is_earliest=document.occurred_at == earliest)
+            _badged(document, is_earliest=document.occurred_at == badged_date)
             for document in dated
         ]
         earliest_count = sum(1 for document in dated if document.is_earliest)
@@ -109,6 +146,7 @@ def build_timeline(hits: list[SearchHit]) -> Timeline:
         # whatever order the dict happened to hold them.
         dated=tuple(sorted(dated, key=lambda d: (d.occurred_at, d.best_distance))),
         undated=tuple(sorted(undated, key=lambda d: d.best_distance)),
+        documents_considered=len(documents),
         earliest_count=earliest_count,
         badge_suppressed=badge_suppressed,
     )
@@ -141,4 +179,73 @@ def _badged(document: TimelineDocument, *, is_earliest: bool) -> TimelineDocumen
         hits=document.hits,
         best_distance=document.best_distance,
         is_earliest=is_earliest,
+    )
+
+
+def timeline_results(
+    timeline: Timeline, *, query: str, embed_ms: float, query_ms: float
+) -> TimelineResults:
+    """The wire shape, including which claim the badge is making.
+
+    Shaping happens here rather than in the frontend for the same reason the eval
+    calls `build_timeline` rather than reimplementing it: the badge rule is the
+    product's headline claim, and a claim written in two languages is measured in
+    one of them. What crosses the wire is the decision, not the ingredients for
+    making it again.
+    """
+    return TimelineResults(
+        query=query,
+        badge=_badge(timeline),
+        documents_considered=timeline.documents_considered,
+        dated=[_entry(document) for document in timeline.dated],
+        undated=[_entry(document) for document in timeline.undated],
+        embed_ms=embed_ms,
+        query_ms=query_ms,
+    )
+
+
+def _badge(timeline: Timeline) -> EarliestMatch | Undetermined | NoMatches:
+    """Which of the three claims is being made.
+
+    The variant name is what the interface switches on. Switching on
+    `earliest_count == 0` instead would collapse the two no-badge cases, which
+    need different sentences: one says an undated document might come first, the
+    other says nothing matched.
+    """
+    if timeline.badge_suppressed:
+        return Undetermined(undated_count=len(timeline.undated))
+    if not timeline.dated:
+        return NoMatches()
+    return EarliestMatch(
+        document_ids=[
+            document.document_id for document in timeline.dated if document.is_earliest
+        ]
+    )
+
+
+def _entry(document: TimelineDocument) -> TimelineEntry:
+    """One document group, flattened for the wire.
+
+    `best_distance` is deliberately not carried out: it exists to order documents
+    within a date tie, that ordering is already applied, and a relevance number on
+    the group is the field a renderer would eventually sort or filter by.
+    """
+    return TimelineEntry(
+        document_id=document.document_id,
+        course_id=document.course_id,
+        document_title=document.document_title,
+        course_name=document.course_name,
+        occurred_at=document.occurred_at,
+        occurred_at_source=document.occurred_at_source,
+        hits=[
+            TimelineHit(
+                chunk_id=hit.chunk_id,
+                page_number=hit.page_number,
+                char_start=hit.char_start,
+                char_end=hit.char_end,
+                content=hit.content,
+                distance=hit.distance,
+            )
+            for hit in document.hits
+        ],
     )

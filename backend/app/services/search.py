@@ -12,9 +12,10 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories import search as search_repo
-from app.schemas.search import SearchHit, SearchResults
+from app.schemas.search import SearchHit, SearchResults, TimelineResults
 from app.services.embedding import embed_query
 from app.services.errors import ServiceError
+from app.services.timeline import build_timeline, timeline_results
 
 
 async def search(
@@ -75,6 +76,36 @@ async def search(
         ],
         embed_ms=(embedded_at - started) * 1000,
         query_ms=(finished - embedded_at) * 1000,
+    )
+
+
+async def search_timeline(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    query: str,
+    limit: int = 20,
+    course_id: uuid.UUID | None = None,
+) -> TimelineResults:
+    """What `POST /search` actually answers: the same ranking, shaped as a timeline.
+
+    Two steps and no third. `search` ranks chunks, `build_timeline` groups them
+    per document and decides the badge -- the same function slice 4's eval scores,
+    so the number reported and the badge shipped come from one implementation.
+
+    `limit` is still chunks, not documents: 20 chunks may be five documents or
+    twenty, and `documents_considered` reports which. Nothing between here and the
+    response drops a document, so that count is the size of the set the badge is a
+    claim about.
+    """
+    results = await search(
+        session, user_id=user_id, query=query, limit=limit, course_id=course_id
+    )
+    return timeline_results(
+        build_timeline(results.hits),
+        query=results.query,
+        embed_ms=results.embed_ms,
+        query_ms=results.query_ms,
     )
 
 
