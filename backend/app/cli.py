@@ -418,9 +418,24 @@ async def _eval(args: argparse.Namespace) -> int:
     return 0
 
 
+# Printed above the numbers and again under the verdict, on purpose. The tally
+# is invariant to these dates -- the badge reads order only -- but "20 MIT
+# lectures dated February to April 2020" reads as archival fact and is not one,
+# so the caveat is attached to the number rather than left in a file someone may
+# never open. Anyone who can see `2/16` can see this.
+DATING_CAVEAT = "corpus dates are CONSTRUCTED, not MIT's -- see evals/lecture_dates.tsv."
+DATING_DETAIL = (
+    "The tally is invariant to them (order is all the badge reads), but they"
+    " are not evidence of when anything was actually taught."
+)
+
+
 def _report_eval(keyword: list[QuestionResult], vector: list[QuestionResult]) -> None:
     keyword_all, vector_all = tally("keyword", keyword), tally("vector", vector)
 
+    print(f"NOTE: {DATING_CAVEAT}")
+    print(f"      {DATING_DETAIL}")
+    print()
     print("BASELINE FIRST -- ILIKE, ranked by distinct terms matched then frequency\n")
     _table(keyword_all, vector_all)
 
@@ -448,6 +463,8 @@ def _report_eval(keyword: list[QuestionResult], vector: list[QuestionResult]) ->
         )
 
     print(f"\nverdict{_verdict(keyword_all, vector_all)}")
+    print(f"  cite with: {DATING_CAVEAT}")
+    print(f"  {DATING_DETAIL}")
 
 
 # Fixed before the run, in `retrieval_eval`: 16 questions means one question is

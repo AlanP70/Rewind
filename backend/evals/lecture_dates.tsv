@@ -1,0 +1,62 @@
+# The dates the eval's 20 lectures carry, and where they came from.
+#
+# ---------------------------------------------------------------------------
+# THESE DATES ARE CONSTRUCTED. THEY ARE NOT MIT'S CALENDAR.
+# ---------------------------------------------------------------------------
+#
+# MIT OCW publishes 6.006 Spring 2020's lecture notes and its topic titles. It
+# does not publish, anywhere this project found, the calendar date each lecture
+# was delivered. So the dates below are invented: lecture N sits in the Nth
+# Tue/Thu slot counting from Tue 2020-02-04, with nothing skipped for holidays,
+# reading week, or the mid-March point at which MIT actually went remote.
+#
+# They are stored with `occurred_at_source = manual`, which is the truthful
+# value -- a person chose them -- and not `parsed_syllabus`, which would claim a
+# source said something it never said.
+#
+# Why inventing them is defensible here, stated so it is not mistaken for
+# sloppiness: the eval reads *order*, never distance. `build_timeline` badges the
+# earliest `occurred_at` and draws no proportional axis -- the timeline is an
+# ordering, not a scale. Every strictly increasing assignment keyed to the
+# lecture ordinal therefore produces a byte-identical tally, and this one is
+# strictly increasing with no ties. The scores do not depend on these dates.
+#
+# Why it still has to be flagged at every citation: "20 MIT 6.006 lectures dated
+# 2020-02-04 to 2020-04-09" reads as archival fact, and it is not one. Anyone
+# quoting the eval's 2/16 or 4/16 must be one hop from this file. Zero dated
+# documents was not an option -- it would score every question `unrankable` and
+# leave the phase's headline claim unmeasured -- so the choice was between
+# constructed dates that are labelled and no measurement at all.
+#
+# The one thing here that IS real is the order: lecture 7 did precede lecture 8.
+# That is the only property the eval consumes.
+#
+# Reversal condition: real 6.006 Spring 2020 lecture dates, from OCW or a
+# syllabus. They would not change any number in the eval. They would change what
+# this corpus can be used to demonstrate later -- a proportional axis, a gap, a
+# "you learned this three weeks before the exam" claim -- none of which this
+# corpus can support today.
+#
+# Applied by `python evals/date_corpus.py <course_id>`.
+#
+# ordinal<TAB>occurred_on
+1	2020-02-04
+2	2020-02-06
+3	2020-02-11
+4	2020-02-13
+5	2020-02-18
+6	2020-02-20
+7	2020-02-25
+8	2020-02-27
+9	2020-03-03
+10	2020-03-05
+11	2020-03-10
+12	2020-03-12
+13	2020-03-17
+14	2020-03-19
+15	2020-03-24
+16	2020-03-26
+17	2020-03-31
+18	2020-04-02
+19	2020-04-07
+20	2020-04-09
