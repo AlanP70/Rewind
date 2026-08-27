@@ -101,6 +101,32 @@ the whole corpus" — when slice 4 settled what the badge claims; same behaviour
 and the reason is what a future reader will use to decide the rule is still
 needed.) Undated matches are shown, grouped, never silently dropped.
 
+**Slice 5 shaped the timeline on the server. `POST /search` returns documents
+already grouped, ordered and badged**, via `search_timeline` — not a flat chunk
+list for the browser to assemble. Shaping in the frontend was considered and
+rejected: the badge rule is the headline claim, slice 4's numbers are
+`build_timeline`'s output, and a rule written in two languages is measured in one
+of them. **The claim's name crosses the wire** as a discriminated union in the API
+schema — `earliest-match` / `undetermined` / `no-matches`, discriminator `claim` —
+because the last two are the same missing badge for opposite reasons and need
+different sentences. Three guards make re-adding a threshold visible rather than
+easy: **`badge_earliest(dates)` takes dates and nothing else** (widening that
+signature is the only way relevance reaches the badge, and a test pins the
+parameter list), **no cutoff field in `SearchRequest`** (a test pins its fields
+exactly; `limit` caps retrieval, it does not filter matches), and
+**`documents_considered` is required and computed at grouping time** — the
+plausible wrong version is `len(dated)`, right on every fixture where nothing is
+undated. `build_timeline` was mutation-checked for the first time: four mutants,
+four caught, each by a different test. The caveat ships in
+`describeTimeline.ts`, not only in ROADMAP — *"the oldest of what this search
+found, not necessarily the first time this appeared"* — with a test asserting the
+phrase, because "earliest match" and "first occurrence" read identically unless
+the interface says otherwise. On the real corpus this behaves as slice 4
+predicted rather than hiding it: `dynamic programming` badges **lecture 2**, a
+passing mention, over lectures 15–18 where it is taught. That is the correct
+output of an honest claim, and the query that would have looked like a wrong
+answer under the old wording. Nothing renders yet; components are the next slice.
+
 **Slice 4 answered the phase's real question and the answer is no: vector search
 did not beat the keyword baseline.** 16 pre-registered questions, top 20 of 40:
 **vector 2/16 first-correct against ILIKE's 4/16**, recall@10 0.94 against 0.97,
