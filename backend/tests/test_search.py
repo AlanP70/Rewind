@@ -25,10 +25,10 @@ from app.main import app
 from app.models import Chunk, Course, Document, DocumentStatus, OccurredAtSource, User
 from app.models.chunk import EMBEDDING_DIMENSIONS
 from app.models.user import SEED_USER_ID
-from app.repositories.search import count_embedded_chunks, nearest_chunks
+from app.repositories.search import count_embedded_chunks, keyword_chunks, nearest_chunks
 from app.services.errors import ServiceError
 from app.services.ingestion import create_course
-from app.services.search import search
+from app.services.search import keyword_search, keyword_terms, search
 
 # A second owner, for the isolation test below. `users` is deliberately not in
 # conftest's TRUNCATE list -- the seed user is inserted by migration 0002 and has
@@ -241,6 +241,244 @@ async def test_an_empty_query_is_refused_before_it_is_paid_for(
     a request to embed nothing."""
     with pytest.raises(ServiceError, match="needs a query"):
         await search(session, user_id=SEED_USER_ID, query="   ")
+
+
+# ---------------------------------------------------------------------------
+# The keyword baseline
+#
+# It exists to be beaten, so what these pin is that it is not a strawman. Every
+# one of them fails in the direction of flattering vector search if the
+# implementation is lazy, which is the direction nobody would notice.
+# ---------------------------------------------------------------------------
+
+
+async def make_text_document(
+    session: AsyncSession,
+    *,
+    course: Course,
+    title: str,
+    passages: list[str],
+    embedded: bool = True,
+    occurred_at: datetime | None = None,
+    chunk_ids: list[uuid.UUID] | None = None,
+) -> Document:
+    """Like `make_document`, but the text is what matters and the vector is not."""
+    document = Document(
+        user_id=SEED_USER_ID,
+        course_id=course.id,
+        title=title,
+        kind="lecture",
+        storage_key=f"{SEED_USER_ID}/{title}.pdf",
+        status=DocumentStatus.READY,
+        occurred_at=occurred_at,
+        occurred_at_source=OccurredAtSource.MANUAL if occurred_at else None,
+    )
+    session.add(document)
+    await session.flush()
+
+    for index, passage in enumerate(passages):
+        session.add(
+            Chunk(
+                id=chunk_ids[index] if chunk_ids else uuid.uuid4(),
+                user_id=SEED_USER_ID,
+                document_id=document.id,
+                content=passage,
+                embedding=axis(0) if embedded else None,
+                page_number=index + 1,
+                char_start=0,
+                char_end=len(passage),
+                chunk_index=index,
+            )
+        )
+    await session.flush()
+    return document
+
+
+def test_keyword_terms_drops_question_scaffolding() -> None:
+    """Without this the baseline matches every chunk in the corpus on `the` and
+    `where`, scores nothing, and measures the person who wrote it."""
+    assert keyword_terms("Where did I first learn about hashing?") == ["learn", "hashing"]
+
+
+def test_keyword_terms_drops_the_possessive_s() -> None:
+    """`Dijkstra's` tokenises to two words, and a bare `s` is a substring of
+    almost every chunk ever written."""
+    assert keyword_terms("Dijkstra's algorithm") == ["dijkstra", "algorithm"]
+
+
+def test_keyword_terms_deduplicates() -> None:
+    """A term counted twice is weighted twice, so a repeated word in the question
+    would silently outrank a distinct one."""
+    assert keyword_terms("graph search over a graph") == ["graph", "search"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_ranks_by_distinct_terms_before_frequency(
+    session: AsyncSession, course: Course
+) -> None:
+    """Two terms once each beats one term six times.
+
+    The lazier ranking -- total occurrences -- would put `repetitive` first, and
+    on real course material that is a page that happens to say `graph` a lot
+    rather than the page about graph search.
+    """
+    await make_text_document(
+        session,
+        course=course,
+        title="repetitive",
+        passages=["graph graph graph graph graph graph"],
+        occurred_at=datetime(2020, 3, 1, tzinfo=UTC),
+    )
+    await make_text_document(
+        session,
+        course=course,
+        title="both",
+        passages=["a graph search"],
+        occurred_at=datetime(2020, 3, 2, tzinfo=UTC),
+    )
+
+    hits = await keyword_chunks(
+        session, user_id=SEED_USER_ID, terms=["graph", "search"], limit=10
+    )
+
+    assert [hit.document_title for hit in hits] == ["both", "repetitive"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_matches_any_term_not_all_of_them(
+    session: AsyncSession, course: Course
+) -> None:
+    """`AND` across every term returns nothing for a question phrased as a
+    sentence. A baseline that scores zero is not a baseline."""
+    await make_text_document(
+        session, course=course, title="partial", passages=["a graph and nothing else"]
+    )
+
+    hits = await keyword_chunks(
+        session, user_id=SEED_USER_ID, terms=["graph", "search", "vertex"], limit=10
+    )
+
+    assert [hit.document_title for hit in hits] == ["partial"]
+    # One term of three present, so two thirds missing. Not a distance -- the
+    # field is shared so both rankers hand the scorer an identical shape.
+    assert hits[0].distance == pytest.approx(2 / 3)
+
+
+@pytest.mark.asyncio
+async def test_keyword_excludes_chunks_that_match_nothing(
+    session: AsyncSession, course: Course
+) -> None:
+    await make_text_document(session, course=course, title="matching", passages=["a graph"])
+    await make_text_document(session, course=course, title="silent", passages=["a heap"])
+
+    hits = await keyword_chunks(session, user_id=SEED_USER_ID, terms=["graph"], limit=10)
+
+    assert [hit.document_title for hit in hits] == ["matching"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_sees_the_same_rows_as_vector_search(
+    session: AsyncSession, course: Course
+) -> None:
+    """Unembedded chunks are excluded from both rankers.
+
+    The baseline does not need that filter and would work fine without it, which
+    is the problem: the two rankers would then be scored over different corpora,
+    the comparison would be meaningless, and nothing in the output would say so.
+    """
+    await make_text_document(session, course=course, title="ready", passages=["a graph"])
+    await make_text_document(
+        session, course=course, title="pending", passages=["a graph"], embedded=False
+    )
+
+    hits = await keyword_chunks(session, user_id=SEED_USER_ID, terms=["graph"], limit=10)
+
+    assert [hit.document_title for hit in hits] == ["ready"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_tie_break_does_not_look_at_dates(
+    session: AsyncSession, course: Course
+) -> None:
+    """The one that matters most, because the metric is *first* occurrence.
+
+    Two chunks tie on every ranking signal. If `occurred_at` were in the
+    `ORDER BY`, swapping the two documents' dates would swap the results -- and
+    the baseline would score well on "which came first" by guessing rather than
+    by matching anything, which would make the whole comparison worthless in the
+    direction that looks like a strong baseline.
+    """
+    early, late = uuid.UUID(int=1), uuid.UUID(int=2)
+
+    async def order_for(first_date: datetime, second_date: datetime) -> list[uuid.UUID]:
+        await make_text_document(
+            session,
+            course=course,
+            title="one",
+            passages=["a graph"],
+            occurred_at=first_date,
+            chunk_ids=[early],
+        )
+        await make_text_document(
+            session,
+            course=course,
+            title="two",
+            passages=["a graph"],
+            occurred_at=second_date,
+            chunk_ids=[late],
+        )
+        hits = await keyword_chunks(
+            session, user_id=SEED_USER_ID, terms=["graph"], limit=10
+        )
+        return [hit.chunk_id for hit in hits]
+
+    march, may = datetime(2020, 3, 1, tzinfo=UTC), datetime(2020, 5, 1, tzinfo=UTC)
+    one_way = await order_for(march, may)
+    await session.rollback()
+    other_way = await order_for(may, march)
+
+    assert one_way == other_way == [early, late]
+
+
+@pytest.mark.asyncio
+async def test_keyword_never_returns_another_users_chunks(
+    session: AsyncSession, course: Course
+) -> None:
+    """Same scoping as `nearest_chunks`. Phase 7 is auth; the filter is here now,
+    on both rankers, because the second one is easy to forget."""
+    session.add(User(id=OTHER_USER_ID, email="someone.else@example.com"))
+    await session.flush()
+    theirs = await create_course(
+        session,
+        user_id=OTHER_USER_ID,
+        name="Their Algorithms Course",
+        starts_on=date(2020, 2, 3),
+        ends_on=date(2020, 5, 12),
+    )
+    session.add(
+        Document(
+            id=uuid.uuid4(),
+            user_id=OTHER_USER_ID,
+            course_id=theirs.id,
+            title="theirs",
+            kind="lecture",
+            storage_key=f"{OTHER_USER_ID}/theirs.pdf",
+            status=DocumentStatus.READY,
+        )
+    )
+    await session.flush()
+
+    await make_text_document(session, course=course, title="mine", passages=["a graph"])
+
+    hits = await keyword_chunks(session, user_id=SEED_USER_ID, terms=["graph"], limit=10)
+
+    assert [hit.document_title for hit in hits] == ["mine"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_search_refuses_an_empty_query(session: AsyncSession) -> None:
+    with pytest.raises(ServiceError, match="needs a query"):
+        await keyword_search(session, user_id=SEED_USER_ID, query="   ")
 
 
 @pytest_asyncio.fixture

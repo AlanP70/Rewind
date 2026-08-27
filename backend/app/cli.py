@@ -7,6 +7,7 @@ same services this does.
 
 import argparse
 import asyncio
+import json
 import logging
 import statistics
 import sys
@@ -15,6 +16,7 @@ from datetime import date
 from pathlib import Path
 
 from app.core.db import async_session
+from app.core.paths import BACKEND_DIR
 from app.core.storage import get_storage, storage_key
 from app.models.user import SEED_USER_ID
 from app.repositories.search import count_embedded_chunks
@@ -24,11 +26,22 @@ from app.services.dating import (
     date_course_from_syllabus,
     parse_course_syllabus,
 )
+from app.services.embedding import MODEL, embed_query
 from app.services.errors import ServiceError
 from app.services.extraction import extract_pages
 from app.services.ingestion import create_course, plan_chunks
 from app.services.processing import embed_with_estimate, process_document
-from app.services.search import search
+from app.services.retrieval_eval import (
+    FETCH,
+    SCORE_AT,
+    Phrasing,
+    QuestionResult,
+    Tally,
+    load_questions,
+    score_question,
+    tally,
+)
+from app.services.search import keyword_search, search
 from app.services.syllabus_schedule import ScheduleEntry
 from app.services.verification import verify_document
 
@@ -331,6 +344,166 @@ async def _search(args: argparse.Namespace) -> int:
     return 0
 
 
+QUESTIONS = BACKEND_DIR / "evals" / "questions.tsv"
+
+# Gitignored. 16 vectors, so a re-run costs nothing and, more to the point,
+# cannot quietly re-embed and move a number that is being compared against a
+# previous run.
+QUERY_CACHE = BACKEND_DIR / "evals" / ".query_cache.json"
+
+# What the corpus must look like before anything is scored. There are two
+# identically-named 6.006 courses in local development, and scoring the wrong one
+# produces a plausible number with no error attached to it -- the same failure
+# `corpus.tsv`'s checksums exist to prevent, so the runner is held to it too.
+EXPECTED_DOCUMENTS = 20
+EXPECTED_CHUNKS = 216
+
+
+async def _eval(args: argparse.Namespace) -> int:
+    """Score both rankers over the pre-registered questions and report.
+
+    The reporting order is fixed and is not a presentation choice: baseline
+    first, then vector, then the split by phrasing, then the boilerplate
+    numbers, and only then a verdict. A verdict written above its own evidence
+    is a conclusion the evidence gets fitted to.
+    """
+    questions = load_questions(QUESTIONS)
+    cache = _load_cache()
+
+    async with async_session() as session:
+        size = await count_embedded_chunks(
+            session, user_id=SEED_USER_ID, course_id=args.course_id
+        )
+        if not args.any_corpus and (
+            size.documents != EXPECTED_DOCUMENTS or size.embedded_chunks != EXPECTED_CHUNKS
+        ):
+            raise ServiceError(
+                f"course {args.course_id} has {size.documents} documents and "
+                f"{size.embedded_chunks} embedded chunks; the pinned eval corpus is "
+                f"{EXPECTED_DOCUMENTS} and {EXPECTED_CHUNKS}. Refusing to score -- "
+                f"a number measured against the wrong course is worse than no number. "
+                f"Pass --any-corpus to override deliberately."
+            )
+
+        print(f"corpus:    {size.embedded_chunks} embedded chunks in {size.documents} documents")
+        print(f"questions: {len(questions)} from {QUESTIONS.name}")
+        print(f"scored at: top {SCORE_AT} of {FETCH} fetched\n")
+
+        keyword_results, vector_results = [], []
+        for question in questions:
+            keyword_hits = await keyword_search(
+                session,
+                user_id=SEED_USER_ID,
+                query=question.query,
+                limit=FETCH,
+                course_id=args.course_id,
+            )
+            embedding = cache.get(question.query)
+            vector_hits = await search(
+                session,
+                user_id=SEED_USER_ID,
+                query=question.query,
+                limit=FETCH,
+                course_id=args.course_id,
+                embedding=embedding,
+            )
+            if embedding is None:
+                cache[question.query] = await embed_query(question.query)
+
+            keyword_results.append(score_question(question, keyword_hits.hits))
+            vector_results.append(score_question(question, vector_hits.hits))
+
+    _save_cache(cache)
+    _report_eval(keyword_results, vector_results)
+    return 0
+
+
+def _report_eval(keyword: list[QuestionResult], vector: list[QuestionResult]) -> None:
+    keyword_all, vector_all = tally("keyword", keyword), tally("vector", vector)
+
+    print("BASELINE FIRST -- ILIKE, ranked by distinct terms matched then frequency\n")
+    _table(keyword_all, vector_all)
+
+    print("\nby phrasing -- never pooled; a literal query and this baseline are")
+    print("looking for the same characters, so the average of the two hides both\n")
+    for kind in Phrasing:
+        subset = lambda rs: [r for r in rs if r.question.kind is kind]  # noqa: E731
+        print(f"  {kind}")
+        _table(tally("keyword", subset(keyword)), tally("vector", subset(vector)), indent=4)
+
+    print("\npage-1 boilerplate")
+    for result in (keyword_all, vector_all):
+        print(
+            f"  {result.label:<8} page-1 chunk in top 3: {result.page1_in_top3}/{result.total}"
+            f"   first-wrong caused by one: "
+            f"{result.first_wrong_caused_by_page1}/{result.first_wrong}"
+        )
+
+    print("\nper question")
+    for k, v in zip(keyword, vector, strict=True):
+        print(
+            f"  {k.question.id}  {k.question.pair:<20} {k.question.kind:<11}"
+            f"keyword {k.outcome:<14} vector {v.outcome:<14}"
+            f"{v.reason or ''}"
+        )
+
+    print(f"\nverdict{_verdict(keyword_all, vector_all)}")
+
+
+# Fixed before the run, in `retrieval_eval`: 16 questions means one question is
+# 6.25 points, so anything inside two questions is not a result.
+MARGIN = 2
+
+
+def _verdict(keyword: Tally, vector: Tally) -> str:
+    gap = vector.first_correct - keyword.first_correct
+    verdict = (
+        f"\n  vector {vector.first_correct}/{vector.total} first-correct against "
+        f"keyword {keyword.first_correct}/{keyword.total}."
+    )
+    if abs(gap) <= MARGIN:
+        return verdict + (
+            f"\n  A gap of {gap:+d} is within the {MARGIN}-question margin fixed before "
+            f"the run.\n  No measurable difference between vector search and ILIKE on "
+            f"this corpus."
+        )
+    if gap < 0:
+        return verdict + "\n  The keyword baseline wins. That is the result."
+    return verdict + f"\n  Vector search wins by {gap} questions."
+
+
+def _table(keyword: Tally, vector: Tally, indent: int = 2) -> None:
+    pad = " " * indent
+    print(f"{pad}{'':<18}{'keyword':>9}{'vector':>9}")
+    for label, attribute in (
+        ("first-correct", "first_correct"),
+        ("first-wrong", "first_wrong"),
+        ("not-found", "not_found"),
+        ("unrankable", "unrankable"),
+    ):
+        print(
+            f"{pad}{label:<18}{getattr(keyword, attribute):>9}{getattr(vector, attribute):>9}"
+        )
+    for label, attribute in (("recall@10", "recall_at_10"), ("recall@20", "recall_at_20")):
+        print(
+            f"{pad}{label:<18}{getattr(keyword, attribute):>9.2f}"
+            f"{getattr(vector, attribute):>9.2f}"
+        )
+
+
+def _load_cache() -> dict[str, list[float]]:
+    """Keyed by model as well as query -- a cache that survives a model change is
+    a cache that ranks a new query vector against old chunk vectors."""
+    if not QUERY_CACHE.exists():
+        return {}
+    cached = json.loads(QUERY_CACHE.read_text(encoding="utf-8"))
+    return cached.get(MODEL, {})
+
+
+def _save_cache(cache: dict[str, list[float]]) -> None:
+    QUERY_CACHE.write_text(json.dumps({MODEL: cache}), encoding="utf-8")
+
+
 def _timing(samples: list[float]) -> str:
     """Median and range, not a mean.
 
@@ -505,6 +678,22 @@ def main() -> int:
         help="run the same query N times and report median latency and range",
     )
     searching.set_defaults(handler=_search)
+
+    evaluate = subcommands.add_parser(
+        "eval", help="score vector search against the ILIKE baseline on the pinned corpus"
+    )
+    # Required, unlike `search --course-id`. Cross-course is right for a person
+    # asking a question and wrong for a measurement: the eval's ground truth is
+    # about 20 specific documents, and there is more than one course named
+    # `6.006` in a typical development database.
+    evaluate.add_argument("course_id", type=uuid.UUID)
+    evaluate.add_argument(
+        "--any-corpus",
+        action="store_true",
+        help="score even if the course is not the pinned 20-document corpus. The "
+        "numbers are then not comparable with the recorded ones.",
+    )
+    evaluate.set_defaults(handler=_eval)
 
     verify = subcommands.add_parser(
         "verify", help="re-extract a document's PDF and check every chunk's offsets"

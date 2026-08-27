@@ -17,6 +17,11 @@ backend/.storage/
 # `python evals/fetch_corpus.py` to get the files.
 backend/evals/corpus/
 
+# Cached query embeddings for `python -m app.cli eval` — 16 vectors, derivable
+# from `evals/questions.tsv` and an API key. Cached so a re-run cannot quietly
+# re-embed and move a number that is being compared against a previous run.
+backend/evals/.query_cache.json
+
 # Node
 node_modules/
 .next/
