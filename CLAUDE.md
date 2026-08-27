@@ -88,14 +88,53 @@ undated document also matches**, since "first" is a claim about the whole corpus
 and an undated match could precede it. Undated matches are shown, grouped, never
 silently dropped.
 
-**Retrieval quality is the phase's real question and a passing test does not
-answer it.** Slice 4's eval reports a four-way tally — `first-correct` /
-`first-wrong` / `not-found` / `unrankable` — plus recall@k and a keyword
-baseline, against 20 real MIT 6.006 lectures whose ground truth is MIT's own
-topic titles. **The numbers and the baseline get reported before any verdict on
-whether retrieval is good**, same as 58/12/0. If vector search does not beat the
-keyword baseline on this corpus, that gets said plainly rather than reframed —
-it is the more useful result.
+**Slice 4 answered the phase's real question and the answer is no: vector search
+did not beat the keyword baseline.** 16 pre-registered questions, top 20 of 40:
+**vector 2/16 first-correct against ILIKE's 4/16**, recall@10 0.94 against 0.97,
+recall@20 1.00 both. The gap is inside the margin fixed before the run, so the
+finding is **no measurable difference between pgvector and a character matcher**
+on this corpus. Reported plainly, not reframed — it was pre-committed as the more
+useful result and it is. The literal/paraphrase split showed nothing either, 2
+against 1 both ways, and paraphrase is the one place an embedding should win.
+
+**Every citation of those numbers must carry the dating caveat.** The 20 lectures
+are dated `manual` on a **constructed** Tue/Thu sequence (`evals/lecture_dates.tsv`,
+applied by `evals/date_corpus.py`), not MIT's real calendar, which OCW does not
+publish. The tally is invariant to the choice — the badge reads order only — but
+"20 MIT lectures dated Feb–Apr 2020" reads as archival fact and is not one. The
+eval prints the caveat above its own numbers and again under the verdict. Zero
+dated documents was not an option: it scores every question `unrankable`.
+
+**Page-1 boilerplate is measured and ruled out.** In the top 3 for 10/16 keyword
+and 14/16 vector queries — pervasive, as predicted — and it caused **0 of 12** and
+**0 of 14** `first-wrong` cases. The counterfactual earned its keep by ruling
+itself out, and the header-filter/page-1-penalty fix should not be built: there is
+now a number it would not move.
+
+**The tally is dominated by a defect in `build_timeline`, and this does not soften
+the headline.** The four-way tally is the metric the product ships; a number
+explained is not a number improved. But the defect is real and is a design error,
+not a scoring artifact: **`build_timeline` badges the earliest-dated document among
+every matched document with no relevance threshold, so one weak chunk from an early
+lecture takes the badge from a lecture the ranker put first three times over.** q07
+is the worked example — vector returns lecture 8 at ranks 1, 2 and 3 and scores
+`first-wrong` with lecture 4 badged, on one lecture-4 chunk further down the list.
+Expected lecture at rank 1: vector **11/16** against keyword 8/16; in the top 3,
+**15/16** against 11/16. Vector leads at every depth through 5 and loses at 10 and
+20, because retrieval *breadth* is penalised. `SCORE_AT` was not tuned; the 20 is
+pre-registered and the depth table is diagnosis, not a replacement metric.
+
+**Open question, deliberately stated before any answer, and no fix is to be built
+until it is decided: what counts as a match?** The obvious mechanism is a
+similarity cutoff, and its cost is semantic. "First among matches" is a strong
+checkable claim; **"first above some cutoff" is weaker and more arbitrary** — the
+answer moves when the cutoff moves, the cutoff has no principled value, and a
+document that genuinely taught the concept can fall below it and vanish from a
+claim about *first*. That failure is silent where the current one is visible. **If
+a threshold is taken, the caveat ships in the UI, not only in the ROADMAP**, the
+way the badge is already suppressed rather than guessed when an undated document
+matches. Alternatives are unranked on purpose: a distance cutoff, a cap on
+documents, a minimum hits-per-document, or badging by rank-weighted evidence.
 
 Settled by decision, not to be re-opened: hits group **per document**, not per
 chunk; a tie for earliest badges **both, labelled earliest, with the count**;

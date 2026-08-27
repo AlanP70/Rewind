@@ -1880,6 +1880,132 @@ boilerplate never displaces a correct answer it is cosmetic, and the fix — a
 minimum chunk length, a header filter, a page-1 penalty — is one that should be
 argued for against a number it changes.
 
+### Settled in slice 4 (the eval, and the defect it found)
+
+**The headline: vector search did not beat the keyword baseline on this corpus.**
+16 pre-registered questions, top 20 of 40 fetched, both rankers scored by one
+module through one timeline:
+
+| | keyword (ILIKE) | vector |
+|---|---|---|
+| first-correct | **4** | **2** |
+| first-wrong | 12 | 14 |
+| not-found | 0 | 0 |
+| unrankable | 0 | 0 |
+| recall@10 | 0.97 | 0.94 |
+| recall@20 | 1.00 | 1.00 |
+
+Vector is numerically behind, and the 2-question gap is inside the margin fixed
+before the run, so the finding is **no measurable difference between pgvector and
+`ILIKE`** — the embedding round trip buys nothing here that a character matcher
+does not already deliver. This is the result the phase said it would report
+plainly rather than reframe, and the diagnosis further down **does not soften
+it**: the four-way tally is the metric the product ships, and a number explained
+is not a number improved.
+
+The literal/paraphrase split showed nothing — 2 against 1 either way. Paraphrase
+is the one place an embedding should beat a character matcher, and it did not.
+
+**Page-1 boilerplate is ruled out, and the counterfactual earned its keep by
+ruling it out.** A page-1 chunk was in the top 3 for 10/16 keyword and 14/16
+vector queries — pervasive, exactly as slice 3 predicted. It caused **0 of 12**
+and **0 of 14** `first-wrong` cases. Removing every page-1 chunk changes no
+outcome. Boilerplate is cosmetic here, and the minimum-chunk-length /
+header-filter / page-1-penalty fix should not be built: there is now a number it
+would not move.
+
+**The corpus dates are constructed and that is load-bearing for how this is
+cited.** The 20 lectures are dated `manual` on a synthetic Tue/Thu sequence from
+2020-02-04 (`evals/lecture_dates.tsv`), not on MIT's real Spring 2020 calendar.
+The tally is invariant to the choice — the badge reads order only, and any
+strictly increasing assignment keyed to the lecture ordinal gives identical
+results — but **the dates are ours, not MIT's, and every citation of "2/16" must
+be one hop from that fact.** It is stated here, in `CLAUDE.md`, in
+`evals/lecture_dates.tsv`, and printed by `python -m app.cli eval` above the
+numbers themselves.
+
+#### What the tally actually measures: a defect in `build_timeline`
+
+The tally is dominated by the badge rule, not by ranking. Scored on where the
+expected lecture actually lands:
+
+| | keyword | vector |
+|---|---|---|
+| expected lecture at rank 1 | 8/16 | **11/16** |
+| expected lecture in top 3 | 11/16 | **15/16** |
+
+**The failure mode in one sentence: `build_timeline` badges the earliest-dated
+document among *every* matched document with no relevance threshold, so one weak
+chunk from an early lecture takes the badge away from a lecture the ranker put
+first three times over.**
+
+The worked example is **q07**, "binary heaps", expected lecture 8. Vector search
+returns lecture 8 at ranks 1, 2 and 3 — the right answer, three times, at the top
+of the list. It scores `first-wrong` with **lecture 4 badged**, because a single
+lecture-4 chunk sits further down the same 20-hit list and lecture 4 is dated
+earlier. Nothing about the ranking was wrong. The rule discarded it.
+
+The tally as a function of how many chunks the timeline is fed:
+
+```
+depth    1     2     3     5    10    20
+kw       8     8     8     6     6     4
+vector  11    11    12    10     5     2
+```
+
+Vector leads at every depth through 5 and loses at 10 and 20. Retrieval breadth
+is *penalised*: the broader the document spread, the more chances an early
+lecture has to capture the badge, so the ranker that finds more relevant material
+scores worse. **`SCORE_AT` was not tuned** — the 20 is pre-registered and this
+table is diagnosis, not a replacement metric.
+
+**This is a defect in the rule, not an artifact of the scorer.** The eval fed
+`build_timeline` exactly what the UI will feed it and got what the UI will show.
+The rule was approved in slice 2's design: "first" was specified as a claim about
+every matching document, **without asking what counts as matching**. That
+omission is the bug, and it belongs to the design, not to the implementation —
+the code does precisely what it was told.
+
+#### Open question, stated before any answer: what counts as a match?
+
+**No fix is proposed here, deliberately.** The question is worth stating on its
+own before a mechanism gets attached to it, because the obvious mechanism — a
+similarity cutoff below which a document is not "matched" — is not free, and the
+cost is semantic rather than technical:
+
+**A threshold changes what the product claims.** "First among matches" is a
+strong, checkable statement about the corpus. "First above some similarity
+cutoff" is weaker and more arbitrary: the answer moves when the cutoff moves,
+the cutoff has no principled value, and a document that genuinely taught the
+concept can fall below it and vanish from a claim about *first*. That is a worse
+failure than the current one, because the current one is visible — a wrong badge
+on screen — and that one is silent.
+
+So if a threshold is taken, **the caveat ships in the UI, not only here.** The
+interface has to say what "first" now means, in the same way the badge is already
+suppressed rather than guessed when an undated document matches. A cutoff that
+lives in a constant and is explained in a ROADMAP is exactly the invented
+precision this phase has refused three times.
+
+Alternatives exist and are unranked on purpose — a cutoff on distance, a cap on
+documents rather than chunks, a minimum number of hits per document before it
+counts, or badging by rank-weighted evidence rather than by bare presence. Each
+one redefines "matched" differently and each owes the same UI sentence. **The
+decision is which claim the product wants to make, and that is not a tuning
+exercise.**
+
+Suite is 198. Both fixes that unblocked it are their own commits: `keyword_chunks`
+raised `NameError` on a missing `case` import, and
+`test_keyword_tie_break_does_not_look_at_dates` — the load-bearing one, the guard
+against the baseline scoring well by guessing "earliest" — **had only ever
+errored and never once passed.** Its `session.rollback()` between the two runs
+discarded the `course` fixture, so the second run died on a foreign key instead of
+on the thing under test; it is a savepoint now. It was then mutation-checked, since
+a test that has never passed has never demonstrated it can fail for the right
+reason. **A test that never passed is a test nobody knew was broken** — it sits in
+the file looking like coverage, and the suite is green around it.
+
+
 ---
 
 ## Phase 5 — Concepts + canonicalisation
